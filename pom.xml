@@ -251,17 +251,17 @@
     <dependency>
       <groupId>com.github.oshi</groupId>
       <artifactId>oshi-core</artifactId>
-      <version>6.6.2</version>
+      <version>6.10.0</version>
     </dependency>
     <dependency>
       <groupId>org.apache.logging.log4j</groupId>
       <artifactId>log4j-core</artifactId>
-      <version>2.19.0</version>
+      <version>2.25.3</version>
     </dependency>
     <dependency>
       <groupId>org.apache.logging.log4j</groupId>
       <artifactId>log4j-api</artifactId>
-      <version>2.19.0</version>
+      <version>2.25.3</version>
     </dependency>
     <dependency>
       <groupId>com.github.DeadSilenceIV</groupId>
@@ -291,13 +291,13 @@
     <dependency>
       <groupId>org.mockito</groupId>
       <artifactId>mockito-core</artifactId>
-      <version>5.16.1</version>
+      <version>5.22.0</version>
       <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.mockito</groupId>
       <artifactId>mockito-junit-jupiter</artifactId>
-      <version>5.16.1</version>
+      <version>5.22.0</version>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -309,7 +309,7 @@
     <dependency>
       <groupId>org.xerial</groupId>
       <artifactId>sqlite-jdbc</artifactId>
-      <version>3.45.1.0</version>
+      <version>3.51.2.0</version>
       <scope>test</scope>
     </dependency>
     <dependency>
