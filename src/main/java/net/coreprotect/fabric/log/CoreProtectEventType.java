@@ -1,0 +1,28 @@
+package net.coreprotect.fabric.log;
+
+public enum CoreProtectEventType {
+    SERVER_START,
+    SERVER_STOP,
+    PLAYER_JOIN,
+    PLAYER_QUIT,
+    USERNAME_CHANGE,
+    PLAYER_COMMAND,
+    PLAYER_CHAT,
+    ITEM_PICKUP,
+    ITEM_DROP,
+    ITEM_THROW,
+    ITEM_SHOOT,
+    ITEM_BUY,
+    ITEM_SELL,
+    ITEM_CREATE,
+    ITEM_DESTROY,
+    ENTITY_PLACE,
+    ENTITY_BREAK,
+    ENTITY_USE,
+    ENTITY_KILL,
+    SIGN_CHANGE,
+    CONTAINER_TRANSACTION,
+    BLOCK_BREAK,
+    BLOCK_PLACE,
+    BLOCK_USE
+}

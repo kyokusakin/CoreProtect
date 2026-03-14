@@ -64,12 +64,18 @@ mvnw.cmd
 ## Gradle
 #################
 
-build
-gradle
+build/
+.gradle/
+/fabric-native/
+/gradle-9.4.0/
 
 # Wrapper files
-gradlew
-gradlew.bat
+!/gradle/
+!/gradle/wrapper/
+!/gradle/wrapper/gradle-wrapper.jar
+!/gradle/wrapper/gradle-wrapper.properties
+!/gradlew
+!/gradlew.bat
 
 #################
 ## Visual Studio
@@ -206,6 +212,7 @@ refactor.txt
 *.zip
 *.tar.gz
 *.rar
+!/gradle/wrapper/gradle-wrapper.jar
 
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*

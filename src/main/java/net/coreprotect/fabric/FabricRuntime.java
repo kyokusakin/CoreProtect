@@ -1,0 +1,263 @@
+package net.coreprotect.fabric;
+
+import net.coreprotect.fabric.config.CoreProtectFabricConfig;
+import net.coreprotect.fabric.db.CoreProtectDatabase;
+import net.coreprotect.fabric.log.FabricEventLogger;
+import net.coreprotect.fabric.service.ContainerSessionService;
+import net.coreprotect.fabric.service.InspectorService;
+import net.coreprotect.fabric.service.LookupService;
+import net.coreprotect.fabric.service.LookupSessionService;
+import net.coreprotect.fabric.service.PreviewService;
+import net.coreprotect.fabric.service.RollbackService;
+import net.coreprotect.fabric.service.UndoSessionService;
+import net.coreprotect.fabric.util.QueryBounds;
+import net.coreprotect.fabric.util.TransientLookupCache;
+import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.MinecraftServer;
+import org.slf4j.Logger;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+public final class FabricRuntime {
+    private static final String WORLDEDIT_INTEGRATION_CLASS = "net.coreprotect.fabric.integration.worldedit.WorldEditIntegration";
+    private static final String WORLDEDIT_SELECTION_BRIDGE_CLASS = "net.coreprotect.fabric.integration.worldedit.WorldEditSelectionBridge";
+    private static final String CONFIG_FILE_NAME = "coreprotect-fabric.properties";
+    private static final String UNDO_STATE_FILE_NAME = "undo-sessions.bin";
+
+    private final Logger logger;
+    private final Path rootDirectory;
+    private final Path configPath;
+    private CoreProtectFabricConfig config;
+    private CoreProtectDatabase database;
+    private FabricEventLogger eventLogger;
+    private LookupService lookupService;
+    private LookupSessionService lookupSessionService;
+    private PreviewService previewService;
+    private UndoSessionService undoSessionService;
+    private ContainerSessionService containerSessionService;
+    private InspectorService inspectorService;
+    private RollbackService rollbackService;
+    private AutoCloseable worldEditIntegration;
+
+    public FabricRuntime(Logger logger) {
+        this.logger = logger;
+        this.rootDirectory = FabricLoader.getInstance().getConfigDir().resolve("coreprotect-fabric");
+        this.configPath = rootDirectory.resolve(CONFIG_FILE_NAME);
+    }
+
+    public synchronized void initialize(MinecraftServer server) {
+        if (database != null) {
+            return;
+        }
+
+        try {
+            Files.createDirectories(rootDirectory);
+            TransientLookupCache.clear();
+            config = CoreProtectFabricConfig.load(configPath);
+            database = new CoreProtectDatabase(config, rootDirectory, logger);
+            database.start();
+            containerSessionService = new ContainerSessionService();
+            eventLogger = new FabricEventLogger(database, config, logger);
+            lookupService = new LookupService(database);
+            lookupSessionService = new LookupSessionService();
+            previewService = new PreviewService();
+            undoSessionService = new UndoSessionService(rootDirectory.resolve(UNDO_STATE_FILE_NAME), logger);
+            inspectorService = new InspectorService(lookupService);
+            rollbackService = new RollbackService(database, logger);
+            worldEditIntegration = registerOptionalWorldEditIntegration();
+            logger.info("CoreProtect Fabric initialized at {}", rootDirectory.toAbsolutePath());
+        }
+        catch (IOException exception) {
+            throw new IllegalStateException("Unable to initialize CoreProtect Fabric runtime", exception);
+        }
+    }
+
+    public synchronized void shutdown() {
+        if (database == null) {
+            return;
+        }
+
+        closeOptionalIntegration(worldEditIntegration, "WorldEdit");
+        worldEditIntegration = null;
+        TransientLookupCache.clear();
+        database.close();
+        database = null;
+        eventLogger = null;
+        lookupService = null;
+        lookupSessionService = null;
+        previewService = null;
+        undoSessionService = null;
+        containerSessionService = null;
+        inspectorService = null;
+        rollbackService = null;
+    }
+
+    public synchronized void reload(MinecraftServer server) {
+        if (database == null) {
+            initialize(server);
+            return;
+        }
+
+        CoreProtectDatabase previousDatabase = database;
+        AutoCloseable previousWorldEditIntegration = worldEditIntegration;
+
+        try {
+            TransientLookupCache.clear();
+            CoreProtectFabricConfig newConfig = CoreProtectFabricConfig.load(configPath);
+            CoreProtectDatabase newDatabase = new CoreProtectDatabase(newConfig, rootDirectory, logger);
+            newDatabase.start();
+
+            closeOptionalIntegration(previousWorldEditIntegration, "WorldEdit");
+            worldEditIntegration = null;
+
+            config = newConfig;
+            database = newDatabase;
+            containerSessionService = new ContainerSessionService();
+            eventLogger = new FabricEventLogger(newDatabase, newConfig, logger);
+            lookupService = new LookupService(newDatabase);
+            lookupSessionService = new LookupSessionService();
+            previewService = new PreviewService();
+            undoSessionService = new UndoSessionService(rootDirectory.resolve(UNDO_STATE_FILE_NAME), logger);
+            inspectorService = new InspectorService(lookupService);
+            rollbackService = new RollbackService(newDatabase, logger);
+            worldEditIntegration = registerOptionalWorldEditIntegration();
+
+            previousDatabase.close();
+            logger.info("CoreProtect Fabric reloaded from {}", rootDirectory.toAbsolutePath());
+        }
+        catch (IOException | RuntimeException exception) {
+            logger.error("CoreProtect Fabric failed to reload cleanly", exception);
+            throw new IllegalStateException("Unable to reload CoreProtect Fabric runtime", exception);
+        }
+    }
+
+    public Path rootDirectory() {
+        return rootDirectory;
+    }
+
+    public Path configPath() {
+        return configPath;
+    }
+
+    public CoreProtectFabricConfig config() {
+        return config;
+    }
+
+    public CoreProtectDatabase database() {
+        return database;
+    }
+
+    public FabricEventLogger logger() {
+        return eventLogger;
+    }
+
+    public LookupService lookup() {
+        return lookupService;
+    }
+
+    public LookupSessionService lookupSessions() {
+        return lookupSessionService;
+    }
+
+    public PreviewService previews() {
+        return previewService;
+    }
+
+    public UndoSessionService undoSessions() {
+        return undoSessionService;
+    }
+
+    public ContainerSessionService containers() {
+        return containerSessionService;
+    }
+
+    public InspectorService inspector() {
+        return inspectorService;
+    }
+
+    public RollbackService rollback() {
+        return rollbackService;
+    }
+
+    public synchronized int swapDatabase(CoreProtectFabricConfig newConfig, CoreProtectDatabase newDatabase) {
+        if (database == null || eventLogger == null) {
+            throw new IllegalStateException("CoreProtect Fabric rewrite is not initialized yet.");
+        }
+
+        LookupService newLookupService = new LookupService(newDatabase);
+        RollbackService newRollbackService = new RollbackService(newDatabase, logger);
+        InspectorService newInspectorService = new InspectorService(newLookupService);
+        CoreProtectDatabase previousDatabase = database;
+        int bufferedWrites = eventLogger.completeCutover(newDatabase, newConfig);
+        config = newConfig;
+        database = newDatabase;
+        lookupService = newLookupService;
+        rollbackService = newRollbackService;
+        inspectorService = newInspectorService;
+        previousDatabase.close();
+        logger.info("CoreProtect Fabric switched database backend to {}", newDatabase.databaseDescription());
+        return bufferedWrites;
+    }
+
+    public boolean hasWorldEditIntegration() {
+        return worldEditIntegration != null;
+    }
+
+    public QueryBounds resolveWorldEditSelection(ServerPlayerEntity player) {
+        if (!FabricLoader.getInstance().isModLoaded("worldedit")) {
+            throw new IllegalStateException("WorldEdit is not installed.");
+        }
+
+        try {
+            Class<?> bridgeClass = Class.forName(WORLDEDIT_SELECTION_BRIDGE_CLASS);
+            Object result = bridgeClass.getMethod("getSelection", ServerPlayerEntity.class).invoke(null, player);
+            if (result instanceof QueryBounds bounds) {
+                return bounds;
+            }
+            throw new IllegalStateException("WorldEdit selection lookup returned an unexpected result.");
+        }
+        catch (ReflectiveOperationException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new IllegalStateException("Unable to read the WorldEdit selection.", exception);
+        }
+    }
+
+    private AutoCloseable registerOptionalWorldEditIntegration() {
+        if (!FabricLoader.getInstance().isModLoaded("worldedit")) {
+            return null;
+        }
+
+        try {
+            Class<?> integrationClass = Class.forName(WORLDEDIT_INTEGRATION_CLASS);
+            Object result = integrationClass.getMethod("register", FabricRuntime.class, Logger.class).invoke(null, this, logger);
+            if (result instanceof AutoCloseable) {
+                logger.info("CoreProtect Fabric enabled WorldEdit integration");
+                return (AutoCloseable) result;
+            }
+            logger.warn("CoreProtect Fabric WorldEdit integration returned an unexpected type: {}", result);
+        }
+        catch (ReflectiveOperationException | LinkageError exception) {
+            logger.warn("CoreProtect Fabric failed to enable WorldEdit integration", exception);
+        }
+        return null;
+    }
+
+    private void closeOptionalIntegration(AutoCloseable integration, String name) {
+        if (integration == null) {
+            return;
+        }
+
+        try {
+            integration.close();
+        }
+        catch (Exception exception) {
+            logger.warn("CoreProtect Fabric failed to close {} integration cleanly", name, exception);
+        }
+    }
+}
