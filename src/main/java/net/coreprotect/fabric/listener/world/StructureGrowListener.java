@@ -14,7 +14,7 @@ public final class StructureGrowListener {
 
     public static String resolveTreeActor(ServerWorld world, BlockPos pos) {
         FabricRuntime runtime = CoreProtectFabricMod.getRuntime();
-        if (runtime == null || !runtime.config().treeGrowth()) {
+        if (runtime == null || !runtime.config(world).treeGrowth()) {
             return null;
         }
 
@@ -41,7 +41,7 @@ public final class StructureGrowListener {
 
     public static String resolveMushroomActor(ServerWorld world, BlockPos pos) {
         FabricRuntime runtime = CoreProtectFabricMod.getRuntime();
-        if (runtime == null || !runtime.config().mushroomGrowth()) {
+        if (runtime == null || !runtime.config(world).mushroomGrowth()) {
             return null;
         }
         return "#mushroom";

@@ -33,14 +33,18 @@ public abstract class TradeOutputSlotMixin {
 
     @Inject(method = "onTakeItem", at = @At("HEAD"))
     private void coreprotect$captureTradeInputs(PlayerEntity player, ItemStack stack, CallbackInfo ci) {
-        coreprotect$beforeTradeInputs = ItemDeltaSnapshot.snapshotStacks(List.of(
-            merchantInventory.getStack(0),
-            merchantInventory.getStack(1)
-        ));
-        if (player instanceof ServerPlayerEntity serverPlayerEntity) {
+        if (player instanceof ServerPlayerEntity serverPlayerEntity && player.getEntityWorld() instanceof ServerWorld serverWorld) {
+            coreprotect$beforeTradeInputs = ItemDeltaSnapshot.snapshotStacks(List.of(
+                merchantInventory.getStack(0),
+                merchantInventory.getStack(1)
+            ), serverWorld.getRegistryManager());
             coreprotect$beforePlayerInventory = ItemDeltaSnapshot.snapshotPlayerInventory(serverPlayerEntity);
         }
         else {
+            coreprotect$beforeTradeInputs = ItemDeltaSnapshot.snapshotStacks(List.of(
+                merchantInventory.getStack(0),
+                merchantInventory.getStack(1)
+            ));
             coreprotect$beforePlayerInventory = Map.of();
         }
     }
@@ -58,7 +62,7 @@ public abstract class TradeOutputSlotMixin {
             Map<LoggedItemData, Integer> afterTradeInputs = ItemDeltaSnapshot.snapshotStacks(List.of(
                 merchantInventory.getStack(0),
                 merchantInventory.getStack(1)
-            ));
+            ), serverWorld.getRegistryManager());
             Map<LoggedItemData, Integer> afterPlayerInventory = ItemDeltaSnapshot.snapshotPlayerInventory(serverPlayerEntity);
             for (ItemDeltaSnapshot.ItemDelta delta : ItemDeltaSnapshot.diff(coreprotect$beforeTradeInputs, afterTradeInputs)) {
                 if (delta.delta() < 0) {
@@ -74,7 +78,7 @@ public abstract class TradeOutputSlotMixin {
             }
 
             if (!stack.isEmpty()) {
-                LoggedItemData boughtItem = LoggedItemData.fromStack(stack);
+                LoggedItemData boughtItem = LoggedItemData.fromStack(stack, serverWorld.getRegistryManager());
                 int boughtCount = ItemDeltaSnapshot.countDelta(coreprotect$beforePlayerInventory, afterPlayerInventory, boughtItem);
                 if (boughtCount <= 0) {
                     boughtCount = stack.getCount();

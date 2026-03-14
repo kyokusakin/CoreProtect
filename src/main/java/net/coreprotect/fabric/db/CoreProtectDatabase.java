@@ -2,6 +2,7 @@ package net.coreprotect.fabric.db;
 
 import net.coreprotect.fabric.config.CoreProtectFabricConfig;
 import net.coreprotect.fabric.log.CoreProtectEventType;
+import net.coreprotect.fabric.util.LoggedSignState;
 import net.minecraft.util.math.BlockPos;
 import org.slf4j.Logger;
 
@@ -16,7 +17,9 @@ import java.sql.Statement;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -57,7 +60,7 @@ public final class CoreProtectDatabase implements AutoCloseable {
             initializeSchema(writeConnection);
         }
         catch (ClassNotFoundException | SQLException exception) {
-            throw new IllegalStateException("Unable to start CoreProtect Fabric database", exception);
+            throw new IllegalStateException("Unable to start CoreProtect database", exception);
         }
     }
 
@@ -871,7 +874,10 @@ public final class CoreProtectDatabase implements AutoCloseable {
         List<String> excludeTargets
     ) {
         awaitWriterQuiescence();
-        List<CoreProtectEventType> rollbackTypes = eventTypes == null || eventTypes.isEmpty()
+        if (eventTypes != null && eventTypes.isEmpty()) {
+            return List.of();
+        }
+        List<CoreProtectEventType> rollbackTypes = eventTypes == null
             ? List.of(CoreProtectEventType.BLOCK_BREAK, CoreProtectEventType.BLOCK_PLACE, CoreProtectEventType.SIGN_CHANGE)
             : eventTypes;
 
@@ -937,7 +943,7 @@ public final class CoreProtectDatabase implements AutoCloseable {
         }
     }
 
-    public String[] lookupPreviousSignState(String worldKey, BlockPos pos, long beforeId, boolean front) {
+    public LoggedSignState lookupPreviousSignState(String worldKey, BlockPos pos, long beforeId, boolean front) {
         awaitWriterQuiescence();
         String sql =
             "SELECT event_type, payload "
@@ -962,20 +968,20 @@ public final class CoreProtectDatabase implements AutoCloseable {
                 while (resultSet.next()) {
                     CoreProtectEventType eventType = CoreProtectEventType.valueOf(resultSet.getString("event_type"));
                     if (eventType == CoreProtectEventType.SIGN_CHANGE) {
-                        String[] lines = parseSignPayload(resultSet.getString("payload"), front);
-                        if (lines != null) {
-                            return lines;
+                        LoggedSignState signState = parseSignPayload(resultSet.getString("payload"), front);
+                        if (signState != null) {
+                            return signState;
                         }
                         continue;
                     }
 
                     if (eventType == CoreProtectEventType.BLOCK_BREAK || eventType == CoreProtectEventType.BLOCK_PLACE) {
-                        return blankSignLines();
+                        return LoggedSignState.blank(front);
                     }
                 }
             }
 
-            return blankSignLines();
+            return LoggedSignState.blank(front);
         }
         catch (SQLException exception) {
             throw new IllegalStateException("Unable to look up previous sign state", exception);
@@ -1063,10 +1069,18 @@ public final class CoreProtectDatabase implements AutoCloseable {
                         + "rolled_back INTEGER NOT NULL DEFAULT 0"
                         + ")"
                 );
+                statement.executeUpdate(
+                    "CREATE TABLE IF NOT EXISTS cp_entity ("
+                        + "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        + "ts INTEGER NOT NULL, "
+                        + "data TEXT"
+                        + ")"
+                );
                 statement.executeUpdate("CREATE INDEX IF NOT EXISTS cp_events_ts_idx ON cp_events (ts)");
                 statement.executeUpdate("CREATE INDEX IF NOT EXISTS cp_events_actor_idx ON cp_events (actor_uuid)");
                 statement.executeUpdate("CREATE INDEX IF NOT EXISTS cp_events_world_xyz_idx ON cp_events (world_key, x, y, z)");
                 statement.executeUpdate("CREATE INDEX IF NOT EXISTS cp_events_world_ts_idx ON cp_events (world_key, ts)");
+                statement.executeUpdate("CREATE INDEX IF NOT EXISTS cp_entity_ts_idx ON cp_entity (ts)");
             }
             else {
                 statement.executeUpdate(
@@ -1088,6 +1102,15 @@ public final class CoreProtectDatabase implements AutoCloseable {
                         + "KEY cp_events_actor_idx (actor_uuid), "
                         + "KEY cp_events_world_xyz_idx (world_key, x, y, z), "
                         + "KEY cp_events_world_ts_idx (world_key, ts)"
+                        + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+                );
+                statement.executeUpdate(
+                    "CREATE TABLE IF NOT EXISTS cp_entity ("
+                        + "id BIGINT NOT NULL AUTO_INCREMENT, "
+                        + "ts BIGINT NOT NULL, "
+                        + "data LONGTEXT, "
+                        + "PRIMARY KEY (id), "
+                        + "KEY cp_entity_ts_idx (ts)"
                         + ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
                 );
             }
@@ -1120,6 +1143,12 @@ public final class CoreProtectDatabase implements AutoCloseable {
 
     private void insert(EventRecord record) throws SQLException {
         awaitWritesResumed();
+        String payload = record.payload();
+        if (record.type() == CoreProtectEventType.ENTITY_KILL && payload != null && !payload.isBlank()) {
+            long entityKey = insertEntityPayload(payload, record.timestamp());
+            payload = "entity_key=" + entityKey + "\n" + payload;
+        }
+
         try (PreparedStatement statement = writeConnection.prepareStatement(
             "INSERT INTO cp_events ("
                 + "ts, "
@@ -1144,9 +1173,24 @@ public final class CoreProtectDatabase implements AutoCloseable {
             bindNullableInt(statement, 7, record.y());
             bindNullableInt(statement, 8, record.z());
             statement.setString(9, record.target());
-            statement.setString(10, record.payload());
+            statement.setString(10, payload);
             statement.executeUpdate();
         }
+    }
+
+    private long insertEntityPayload(String payload, long timestamp) throws SQLException {
+        String sql = "INSERT INTO cp_entity (ts, data) VALUES (?, ?)";
+        try (PreparedStatement statement = writeConnection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            statement.setLong(1, timestamp);
+            statement.setString(2, payload);
+            statement.executeUpdate();
+            try (ResultSet keys = statement.getGeneratedKeys()) {
+                if (keys.next()) {
+                    return keys.getLong(1);
+                }
+            }
+        }
+        throw new SQLException("Unable to store entity payload");
     }
 
     private void bindNullableInt(PreparedStatement statement, int index, Integer value) throws SQLException {
@@ -1252,22 +1296,30 @@ public final class CoreProtectDatabase implements AutoCloseable {
 
     private List<StoredEventRecord> readRows(PreparedStatement statement) throws SQLException {
         List<StoredEventRecord> rows = new ArrayList<>();
+        Map<Long, String> entityPayloadCache = new HashMap<>();
+        Connection connection = statement.getConnection();
         try (ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
-                rows.add(readRow(resultSet));
+                rows.add(readRow(connection, resultSet, entityPayloadCache));
             }
         }
         return rows;
     }
 
-    private StoredEventRecord readRow(ResultSet resultSet) throws SQLException {
+    private StoredEventRecord readRow(Connection connection, ResultSet resultSet, Map<Long, String> entityPayloadCache) throws SQLException {
         Integer x = resultSet.getObject("x") == null ? null : resultSet.getInt("x");
         Integer y = resultSet.getObject("y") == null ? null : resultSet.getInt("y");
         Integer z = resultSet.getObject("z") == null ? null : resultSet.getInt("z");
+        CoreProtectEventType type = CoreProtectEventType.valueOf(resultSet.getString("event_type"));
+        String payload = resultSet.getString("payload");
+        if (type == CoreProtectEventType.ENTITY_KILL) {
+            payload = resolveEntityKillPayload(connection, payload, entityPayloadCache);
+        }
+
         return new StoredEventRecord(
             resultSet.getLong("id"),
             resultSet.getLong("ts"),
-            CoreProtectEventType.valueOf(resultSet.getString("event_type")),
+            type,
             resultSet.getString("actor_uuid"),
             resultSet.getString("actor_name"),
             resultSet.getString("world_key"),
@@ -1275,9 +1327,74 @@ public final class CoreProtectDatabase implements AutoCloseable {
             y,
             z,
             resultSet.getString("target"),
-            resultSet.getString("payload"),
+            payload,
             resultSet.getInt("rolled_back") != 0
         );
+    }
+
+    private String resolveEntityKillPayload(Connection connection, String payload, Map<Long, String> entityPayloadCache) throws SQLException {
+        long entityKey = parseEntityKey(payload);
+        if (entityKey <= 0L) {
+            return payload;
+        }
+
+        String inlinePayload = payloadAfterEntityKey(payload);
+
+        String cached = entityPayloadCache.get(entityKey);
+        if (cached != null) {
+            return cached;
+        }
+
+        String sql = "SELECT data FROM cp_entity WHERE id = ?";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setLong(1, entityKey);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (resultSet.next()) {
+                    String resolved = resultSet.getString("data");
+                    if (resolved != null) {
+                        entityPayloadCache.put(entityKey, resolved);
+                        return resolved;
+                    }
+                }
+            }
+        }
+
+        return inlinePayload.isBlank() ? payload : inlinePayload;
+    }
+
+    private long parseEntityKey(String payload) {
+        if (payload == null || payload.isBlank()) {
+            return -1L;
+        }
+        String firstLine = payload;
+        int newline = payload.indexOf('\n');
+        if (newline >= 0) {
+            firstLine = payload.substring(0, newline);
+        }
+        if (!firstLine.startsWith("entity_key=")) {
+            return -1L;
+        }
+        String raw = firstLine.substring("entity_key=".length()).trim();
+        if (raw.isEmpty()) {
+            return -1L;
+        }
+        try {
+            return Long.parseLong(raw);
+        }
+        catch (NumberFormatException exception) {
+            return -1L;
+        }
+    }
+
+    private String payloadAfterEntityKey(String payload) {
+        if (payload == null || payload.isBlank()) {
+            return "";
+        }
+        int newline = payload.indexOf('\n');
+        if (newline < 0 || newline + 1 >= payload.length()) {
+            return "";
+        }
+        return payload.substring(newline + 1);
     }
 
     private Connection openConnection() throws SQLException {
@@ -1344,31 +1461,12 @@ public final class CoreProtectDatabase implements AutoCloseable {
         }
     }
 
-    private String[] parseSignPayload(String payload, boolean front) {
-        if (payload == null || payload.isBlank()) {
+    private LoggedSignState parseSignPayload(String payload, boolean front) {
+        LoggedSignState signState = LoggedSignState.parse(payload);
+        if (signState == null || signState.front() != front) {
             return null;
         }
-
-        String[] rawParts = payload.split("\\n", -1);
-        if (rawParts.length == 0) {
-            return null;
-        }
-
-        boolean payloadFront = "front".equalsIgnoreCase(rawParts[0]);
-        boolean payloadBack = "back".equalsIgnoreCase(rawParts[0]);
-        if ((!payloadFront && !payloadBack) || payloadFront != front) {
-            return null;
-        }
-
-        String[] lines = blankSignLines();
-        for (int index = 0; index < lines.length && index + 1 < rawParts.length; index++) {
-            lines[index] = rawParts[index + 1];
-        }
-        return lines;
-    }
-
-    private String[] blankSignLines() {
-        return new String[] { "", "", "", "" };
+        return signState;
     }
 
     @Override
@@ -1390,7 +1488,7 @@ public final class CoreProtectDatabase implements AutoCloseable {
                 writeConnection.close();
             }
             catch (SQLException exception) {
-                logger.warn("Failed to close CoreProtect Fabric database cleanly", exception);
+                logger.warn("Failed to close CoreProtect database cleanly", exception);
             }
         }
     }

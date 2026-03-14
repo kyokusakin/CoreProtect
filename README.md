@@ -53,3 +53,19 @@ CoreProtect is an open source project, and gladly accepts community contribution
 If you'd like to contribute, please read our contributing guidelines here: [CONTRIBUTING.md](CONTRIBUTING.md)
 
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-2.0-4baaaa.svg)](CONTRIBUTING.md#code-of-conduct) 
+Fabric Rewrite (this branch)
+------
+This branch is a ground-up Fabric mod rewrite of CoreProtect, not a Bukkit/Paper plugin.
+It is intentionally isolated from the legacy platform so the codebase can evolve independently.
+
+Key differences from upstream:
+
+- **Platform**: Fabric mod for Minecraft `1.21.11` / Java `21` — no Bukkit or Paper dependency.
+- **Storage**: SQLite (default) and MySQL via `config/coreprotect-fabric/coreprotect-fabric.properties`.
+- **Build**: `.\gradlew.bat build` → `build/libs/coreprotect-fabric-v0.1.0.jar`
+- **Event hooks**: Fabric-native hooks covering block break/place, liquid flow, hoppers, pistons, explosions, entity interactions, item transactions, sign edits, WorldEdit (optional), and more — see source for full list.
+- **Commands**: Full `/co` command surface including `lookup`, `rollback`, `restore`, `undo`, `purge`, `inspect`, `near`, `tp`, `migrate-db`, `network-debug`, and `consumer`.
+- **Permissions**: LuckPerms via `fabric-permissions-api`; falls back to vanilla op levels.
+- **API**: Fabric-native entry point at `net.coreprotect.fabric.api.CoreProtectFabric.getAPI()` plus legacy compatibility shims for `net.coreprotect.CoreProtect`, `net.coreprotect.CoreProtectAPI`, and `net.coreprotect.api.*`.
+- **Networking**: `/co network-debug` and lookup result streaming over the `coreprotect:data` channel.
+- **Undo state**: Persisted across reload/restart in `config/coreprotect-fabric/undo-sessions.bin`.

@@ -3,11 +3,16 @@ package net.coreprotect.fabric.log;
 import net.coreprotect.fabric.config.CoreProtectFabricConfig;
 import net.coreprotect.fabric.db.CoreProtectDatabase;
 import net.coreprotect.fabric.db.EventRecord;
+import net.coreprotect.fabric.service.BlacklistService;
+import net.coreprotect.fabric.service.WorldConfigService;
 import net.coreprotect.fabric.util.BlockStateSerializer;
+import net.coreprotect.fabric.util.ContainerTransactionHelper;
 import net.coreprotect.fabric.util.LoggedItemChange;
 import net.coreprotect.fabric.util.LoggedItemData;
+import net.coreprotect.fabric.util.LoggedSignState;
 import net.coreprotect.fabric.util.TransientLookupCache;
 import net.minecraft.block.BlockState;
+import net.minecraft.block.entity.SignBlockEntity;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.LivingEntity;
@@ -35,19 +40,22 @@ import org.slf4j.Logger;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 public final class FabricEventLogger {
     private final Object cutoverMonitor = new Object();
     private final Logger logger;
     private CoreProtectDatabase database;
-    private CoreProtectFabricConfig config;
+    private WorldConfigService configs;
+    private BlacklistService blacklist;
     private boolean cutoverBuffering;
     private final List<EventRecord> cutoverBuffer = new ArrayList<>();
 
-    public FabricEventLogger(CoreProtectDatabase database, CoreProtectFabricConfig config, Logger logger) {
+    public FabricEventLogger(CoreProtectDatabase database, WorldConfigService configs, BlacklistService blacklist, Logger logger) {
         this.database = database;
-        this.config = config;
+        this.configs = configs;
+        this.blacklist = blacklist;
         this.logger = logger;
     }
 
@@ -57,10 +65,11 @@ public final class FabricEventLogger {
         }
     }
 
-    public int completeCutover(CoreProtectDatabase newDatabase, CoreProtectFabricConfig newConfig) {
+    public int completeCutover(CoreProtectDatabase newDatabase, WorldConfigService newConfigs, BlacklistService newBlacklist) {
         synchronized (cutoverMonitor) {
             database = newDatabase;
-            config = newConfig;
+            configs = newConfigs;
+            blacklist = newBlacklist;
             int flushed = cutoverBuffer.size();
             for (EventRecord record : cutoverBuffer) {
                 newDatabase.write(record);
@@ -114,16 +123,17 @@ public final class FabricEventLogger {
     }
 
     public void logPlayerJoin(ServerPlayerEntity player) {
+        CoreProtectFabricConfig config = configFor((ServerWorld) player.getEntityWorld());
+        logUsernameChangeIfNeeded(player);
         if (!config.logSessions()) {
             return;
         }
 
-        logUsernameChangeIfNeeded(player);
         write(playerRecord(CoreProtectEventType.PLAYER_JOIN, player, (ServerWorld) player.getEntityWorld(), player.getBlockPos(), player.getName().getString(), null));
     }
 
     public void logPlayerQuit(ServerPlayerEntity player) {
-        if (!config.logSessions()) {
+        if (!configFor((ServerWorld) player.getEntityWorld()).logSessions()) {
             return;
         }
 
@@ -131,20 +141,19 @@ public final class FabricEventLogger {
     }
 
     public void logCommand(ServerCommandSource source, String command) {
-        if (!config.logCommands()) {
-            return;
-        }
-
         if (!(source.getEntity() instanceof ServerPlayerEntity)) {
             return;
         }
 
         ServerPlayerEntity player = (ServerPlayerEntity) source.getEntity();
+        if (!configFor((ServerWorld) player.getEntityWorld()).logCommands()) {
+            return;
+        }
         write(playerRecord(CoreProtectEventType.PLAYER_COMMAND, player, (ServerWorld) player.getEntityWorld(), player.getBlockPos(), command, null));
     }
 
     public void logCommand(String actorName, ServerWorld world, BlockPos pos, String command) {
-        if (!config.logCommands()) {
+        if (!configFor(world).logCommands()) {
             return;
         }
         if (actorName == null || actorName.isBlank() || world == null || pos == null || command == null || command.isBlank()) {
@@ -166,7 +175,7 @@ public final class FabricEventLogger {
     }
 
     public void logChat(ServerPlayerEntity player, ServerWorld world, BlockPos pos, String message) {
-        if (!config.logChat()) {
+        if (!configFor(world).logChat()) {
             return;
         }
 
@@ -174,7 +183,7 @@ public final class FabricEventLogger {
     }
 
     public void logChat(String actorName, ServerWorld world, BlockPos pos, String message) {
-        if (!config.logChat()) {
+        if (!configFor(world).logChat()) {
             return;
         }
         if (actorName == null || actorName.isBlank() || world == null || pos == null || message == null || message.isBlank()) {
@@ -204,7 +213,7 @@ public final class FabricEventLogger {
             player,
             world.getRegistryKey().getValue().toString(),
             pos,
-            LoggedItemData.fromStack(stack),
+            LoggedItemData.fromStack(stack, world.getRegistryManager()),
             stack.getCount(),
             null
         );
@@ -231,7 +240,7 @@ public final class FabricEventLogger {
             player,
             world.getRegistryKey().getValue().toString(),
             pos,
-            LoggedItemData.fromStack(stack),
+            LoggedItemData.fromStack(stack, world.getRegistryManager()),
             stack.getCount(),
             null
         );
@@ -262,7 +271,7 @@ public final class FabricEventLogger {
             player,
             world.getRegistryKey().getValue().toString(),
             pos,
-            LoggedItemData.fromStack(stack),
+            LoggedItemData.fromStack(stack, world.getRegistryManager()),
             stack.getCount(),
             null
         );
@@ -285,7 +294,7 @@ public final class FabricEventLogger {
             player,
             world.getRegistryKey().getValue().toString(),
             pos,
-            LoggedItemData.fromStack(stack),
+            LoggedItemData.fromStack(stack, world.getRegistryManager()),
             stack.getCount(),
             null
         );
@@ -299,6 +308,10 @@ public final class FabricEventLogger {
         logItemChange(CoreProtectEventType.ITEM_SHOOT, player.getUuidAsString(), player.getName().getString(), worldKey, pos, item, count, contextLabel);
     }
 
+    public void logItemShoot(String actorName, String worldKey, BlockPos pos, LoggedItemData item, int count, String contextLabel) {
+        logItemChange(CoreProtectEventType.ITEM_SHOOT, null, actorName, worldKey, pos, item, count, contextLabel);
+    }
+
     public void logItemBuy(ServerPlayerEntity player, ServerWorld world, BlockPos pos, ItemStack stack) {
         if (stack == null || stack.isEmpty()) {
             return;
@@ -308,7 +321,7 @@ public final class FabricEventLogger {
             player,
             world.getRegistryKey().getValue().toString(),
             pos,
-            LoggedItemData.fromStack(stack),
+            LoggedItemData.fromStack(stack, world.getRegistryManager()),
             stack.getCount(),
             null
         );
@@ -331,7 +344,7 @@ public final class FabricEventLogger {
             player,
             world.getRegistryKey().getValue().toString(),
             pos,
-            LoggedItemData.fromStack(stack),
+            LoggedItemData.fromStack(stack, world.getRegistryManager()),
             stack.getCount(),
             null
         );
@@ -354,7 +367,7 @@ public final class FabricEventLogger {
             player,
             world.getRegistryKey().getValue().toString(),
             pos,
-            LoggedItemData.fromStack(stack),
+            LoggedItemData.fromStack(stack, world.getRegistryManager()),
             stack.getCount(),
             null
         );
@@ -377,7 +390,7 @@ public final class FabricEventLogger {
             player,
             world.getRegistryKey().getValue().toString(),
             pos,
-            LoggedItemData.fromStack(stack),
+            LoggedItemData.fromStack(stack, world.getRegistryManager()),
             stack.getCount(),
             null
         );
@@ -396,7 +409,7 @@ public final class FabricEventLogger {
     }
 
     public void logEntityPlace(ServerPlayerEntity player, ServerWorld world, BlockPos pos, Entity entity) {
-        if (!config.logEntityChanges()) {
+        if (!configFor(world).logEntityChanges()) {
             return;
         }
 
@@ -411,7 +424,7 @@ public final class FabricEventLogger {
     }
 
     public void logEntityPlace(String actorName, ServerWorld world, BlockPos pos, Entity entity) {
-        if (!config.logEntityChanges()) {
+        if (!configFor(world).logEntityChanges()) {
             return;
         }
 
@@ -430,7 +443,7 @@ public final class FabricEventLogger {
     }
 
     public void logEntityBreak(ServerWorld world, BlockPos pos, Entity entity, Entity breaker) {
-        if (!config.logEntityChanges()) {
+        if (!configFor(world).logEntityChanges()) {
             return;
         }
 
@@ -452,7 +465,7 @@ public final class FabricEventLogger {
     }
 
     public void logEntityBreak(String actorName, ServerWorld world, BlockPos pos, Entity entity) {
-        if (!config.logEntityChanges()) {
+        if (!configFor(world).logEntityChanges()) {
             return;
         }
 
@@ -471,7 +484,7 @@ public final class FabricEventLogger {
     }
 
     public void logEntityUse(ServerPlayerEntity player, ServerWorld world, BlockPos pos, Entity entity) {
-        if (!config.logEntityChanges()) {
+        if (!configFor(world).playerInteractions()) {
             return;
         }
 
@@ -486,7 +499,7 @@ public final class FabricEventLogger {
     }
 
     public void logEntityKill(ServerWorld world, Entity killer, LivingEntity killedEntity, DamageSource damageSource) {
-        if (!config.logEntityKills()) {
+        if (!configFor(world).logEntityKills()) {
             return;
         }
 
@@ -494,6 +507,11 @@ public final class FabricEventLogger {
         Entity directSourceEntity = resolveDirectSource(killer, damageSource);
         String directSource = directSourceEntity == null || directSourceEntity == actor ? null : describeEntityType(directSourceEntity);
         String target = describeEntityType(killedEntity);
+        String actorUuid = actor instanceof ServerPlayerEntity ? actor.getUuidAsString() : null;
+        String actorName = describeKillActor(actor, damageSource);
+        if (actorName == null || actorName.isBlank()) {
+            return;
+        }
         if (directSource != null && !directSource.isBlank()) {
             target = target + " via " + directSource;
         }
@@ -501,8 +519,8 @@ public final class FabricEventLogger {
         write(new EventRecord(
             System.currentTimeMillis(),
             CoreProtectEventType.ENTITY_KILL,
-            actor.getUuidAsString(),
-            describeActor(actor),
+            actorUuid,
+            actorName,
             world.getRegistryKey().getValue().toString(),
             killedEntity.getBlockX(),
             killedEntity.getBlockY(),
@@ -517,7 +535,15 @@ public final class FabricEventLogger {
     }
 
     public void logSignChange(UUID actorUuid, String actorName, ServerWorld world, BlockPos pos, boolean front, String[] newLines) {
-        String preview = summarizeSign(front, newLines);
+        logSignChange(actorUuid, actorName, world, pos, resolveSignState(world, pos, front, newLines));
+    }
+
+    public void logSignChange(UUID actorUuid, String actorName, ServerWorld world, BlockPos pos, LoggedSignState signState) {
+        if (signState == null) {
+            return;
+        }
+
+        String preview = summarizeSign(signState.front(), signState.lines());
         write(new EventRecord(
             System.currentTimeMillis(),
             CoreProtectEventType.SIGN_CHANGE,
@@ -528,7 +554,7 @@ public final class FabricEventLogger {
             pos.getY(),
             pos.getZ(),
             preview,
-            serializeSign(front, newLines)
+            signState.serialize()
         ));
     }
 
@@ -541,8 +567,31 @@ public final class FabricEventLogger {
     }
 
     public void logContainerTransaction(String actorUuid, String actorName, String worldKey, BlockPos pos, String containerType, int slotIndex, int button, SlotActionType actionType, ItemStack beforeSlot, ItemStack afterSlot, ItemStack beforeCursor, ItemStack afterCursor) {
-        String target = summarizeContainerTransaction(containerType, slotIndex, button, actionType, beforeSlot, afterSlot, beforeCursor, afterCursor);
-        String payload = serializeContainerTransaction(containerType, slotIndex, button, actionType, beforeSlot, afterSlot, beforeCursor, afterCursor);
+        if (!configFor(worldKey).itemTransactions()) {
+            return;
+        }
+
+        for (ContainerTransactionHelper.ContainerDelta delta : ContainerTransactionHelper.diff(beforeSlot, afterSlot)) {
+            logContainerChange(actorUuid, actorName, worldKey, pos, containerType, delta.item(), delta.count(), delta.added());
+        }
+    }
+
+    public void logContainerChange(ServerPlayerEntity player, String worldKey, BlockPos pos, String containerType, LoggedItemData item, int count, boolean added) {
+        logContainerChange(player.getUuidAsString(), player.getName().getString(), worldKey, pos, containerType, item, count, added);
+    }
+
+    public void logContainerChange(String actorName, String worldKey, BlockPos pos, String containerType, LoggedItemData item, int count, boolean added) {
+        logContainerChange(null, actorName, worldKey, pos, containerType, item, count, added);
+    }
+
+    public void logContainerChange(String actorUuid, String actorName, String worldKey, BlockPos pos, String containerType, LoggedItemData item, int count, boolean added) {
+        if (!configFor(worldKey).itemTransactions() || actorName == null || actorName.isBlank() || pos == null || item == null || item.itemKey() == null || item.itemKey().isBlank() || count <= 0) {
+            return;
+        }
+
+        LoggedItemChange change = new LoggedItemChange(item, count, "");
+        String target = change.summaryTarget();
+        String payload = serializeContainerChange(containerType, change, added);
         write(new EventRecord(
             System.currentTimeMillis(),
             CoreProtectEventType.CONTAINER_TRANSACTION,
@@ -558,7 +607,7 @@ public final class FabricEventLogger {
     }
 
     public void logBlockBreak(ServerPlayerEntity player, ServerWorld world, BlockPos pos, BlockState state) {
-        if (!config.logBlockBreaks()) {
+        if (!configFor(world).logBlockBreaks()) {
             return;
         }
 
@@ -566,7 +615,7 @@ public final class FabricEventLogger {
     }
 
     public void logBlockPlace(ServerPlayerEntity player, ServerWorld world, BlockPos pos, BlockState state) {
-        if (!config.logBlockPlaces()) {
+        if (!configFor(world).logBlockPlaces()) {
             return;
         }
 
@@ -574,7 +623,7 @@ public final class FabricEventLogger {
     }
 
     public void logBlockBreak(UUID actorUuid, String actorName, ServerWorld world, BlockPos pos, BlockState state) {
-        if (!config.logBlockBreaks()) {
+        if (!configFor(world).logBlockBreaks()) {
             return;
         }
 
@@ -590,7 +639,7 @@ public final class FabricEventLogger {
     }
 
     public void logBlockPlace(UUID actorUuid, String actorName, ServerWorld world, BlockPos pos, BlockState state) {
-        if (!config.logBlockPlaces()) {
+        if (!configFor(world).logBlockPlaces()) {
             return;
         }
 
@@ -606,7 +655,7 @@ public final class FabricEventLogger {
     }
 
     public void logBlockUse(ServerPlayerEntity player, ServerWorld world, BlockPos pos, BlockState state) {
-        if (!config.logBlockUses()) {
+        if (!configFor(world).playerInteractions()) {
             return;
         }
 
@@ -614,7 +663,7 @@ public final class FabricEventLogger {
     }
 
     public void logBlockUse(String actorName, ServerWorld world, BlockPos pos, BlockState state) {
-        if (!config.logBlockUses()) {
+        if (!configFor(world).playerInteractions()) {
             return;
         }
         if (actorName == null || actorName.isBlank() || world == null || pos == null || state == null) {
@@ -658,6 +707,7 @@ public final class FabricEventLogger {
         if (actorName == null || actorName.isBlank() || pos == null || item == null || item.itemKey() == null || item.itemKey().isBlank() || count <= 0) {
             return;
         }
+        CoreProtectFabricConfig config = configFor(worldKey);
         if ((type == CoreProtectEventType.ITEM_DROP
             || type == CoreProtectEventType.ITEM_THROW
             || type == CoreProtectEventType.ITEM_SHOOT
@@ -687,6 +737,9 @@ public final class FabricEventLogger {
     }
 
     private void write(EventRecord record) {
+        if (blacklist != null && blacklist.shouldSkip(record)) {
+            return;
+        }
         synchronized (cutoverMonitor) {
             if (cutoverBuffering) {
                 cutoverBuffer.add(record);
@@ -697,6 +750,10 @@ public final class FabricEventLogger {
     }
 
     private void logUsernameChangeIfNeeded(ServerPlayerEntity player) {
+        if (!configFor((ServerWorld) player.getEntityWorld()).usernameChanges()) {
+            return;
+        }
+
         String currentName = player.getName().getString();
         String previousName = database.lookupLatestActorName(player.getUuidAsString());
         if (previousName == null || previousName.isBlank() || previousName.equals(currentName)) {
@@ -722,48 +779,35 @@ public final class FabricEventLogger {
         return summary.toString();
     }
 
-    private String serializeSign(boolean front, String[] lines) {
-        StringBuilder payload = new StringBuilder(front ? "front" : "back");
-        for (String line : lines) {
-            payload.append('\n').append(line == null ? "" : line);
+    private LoggedSignState resolveSignState(ServerWorld world, BlockPos pos, boolean front, String[] lines) {
+        if (world.getBlockEntity(pos) instanceof SignBlockEntity signBlockEntity) {
+            return LoggedSignState.fromBlockEntity(signBlockEntity, front);
         }
-        return payload.toString();
+        return LoggedSignState.of(front, null, false, false, lines);
     }
 
-    private String summarizeContainerTransaction(String containerType, int slotIndex, int button, SlotActionType actionType, ItemStack beforeSlot, ItemStack afterSlot, ItemStack beforeCursor, ItemStack afterCursor) {
-        StringBuilder summary = new StringBuilder();
-        summary.append(simplifyIdentifier(containerType))
-            .append(" ")
-            .append(actionType.name().toLowerCase())
-            .append(" slot=");
-        if (slotIndex < 0) {
-            summary.append("outside");
-        }
-        else {
-            summary.append(slotIndex);
-        }
-        summary.append(" button=").append(button)
-            .append(" ")
-            .append(describeStack(beforeSlot))
-            .append(" -> ")
-            .append(describeStack(afterSlot));
-        if (!ItemStack.areEqual(beforeCursor, afterCursor)) {
-            summary.append(" cursor=").append(describeStack(beforeCursor)).append(" -> ").append(describeStack(afterCursor));
-        }
-        return summary.toString();
-    }
-
-    private String serializeContainerTransaction(String containerType, int slotIndex, int button, SlotActionType actionType, ItemStack beforeSlot, ItemStack afterSlot, ItemStack beforeCursor, ItemStack afterCursor) {
+    private String serializeContainerChange(String containerType, LoggedItemChange change, boolean added) {
         StringBuilder payload = new StringBuilder();
-        payload.append(simplifyIdentifier(containerType))
-            .append('\n').append(slotIndex)
-            .append('\n').append(button)
-            .append('\n').append(actionType.name())
-            .append('\n').append(describeStack(beforeSlot))
-            .append('\n').append(describeStack(afterSlot))
-            .append('\n').append(describeStack(beforeCursor))
-            .append('\n').append(describeStack(afterCursor));
+        appendContainerEntry(payload, "container", simplifyIdentifier(containerType));
+        String itemPayload = change.serializePayload();
+        if (!itemPayload.isBlank()) {
+            if (!payload.isEmpty()) {
+                payload.append('\n');
+            }
+            payload.append(itemPayload);
+        }
+        appendContainerEntry(payload, "added", Boolean.toString(added));
         return payload.toString();
+    }
+
+    private void appendContainerEntry(StringBuilder payload, String key, String value) {
+        if (value == null || value.isBlank()) {
+            return;
+        }
+        if (!payload.isEmpty()) {
+            payload.append('\n');
+        }
+        payload.append(key).append('=').append(value);
     }
 
     private String serializeEntityState(Entity entity) {
@@ -816,7 +860,7 @@ public final class FabricEventLogger {
             }
             NbtCompound nbt = new NbtCompound();
             NbtWriteView writeView = NbtWriteView.create(new ErrorReporter.Impl(entity.getErrorReporterContext()), serverWorld.getRegistryManager());
-            entity.writeData(writeView);
+            entity.saveSelfData(writeView);
             nbt.copyFrom(writeView.getNbt());
             nbt.remove("UUID");
             return nbt.toString();
@@ -829,11 +873,17 @@ public final class FabricEventLogger {
 
     private String serializeEntityKill(Entity killer, Entity actor, LivingEntity killedEntity, DamageSource damageSource) {
         StringBuilder payload = new StringBuilder();
-        payload.append("killer=").append(describeEntityType(killer))
-            .append('\n').append("actor=").append(describeActor(actor))
+        String serializedState = serializeEntityState(killedEntity);
+        String killerType = killer == null ? "unknown" : describeEntityType(killer);
+        String actorName = describeKillActor(actor, damageSource);
+        payload.append("killer=").append(killerType)
+            .append('\n').append("actor=").append(actorName)
             .append('\n').append("target=").append(describeEntityType(killedEntity))
             .append('\n').append("target_uuid=").append(killedEntity.getUuidAsString())
-            .append('\n').append("damage=").append(damageSource.getName());
+            .append('\n').append("damage=").append(damageSource == null ? "unknown" : damageSource.getName());
+        if (!serializedState.isBlank()) {
+            payload.append('\n').append(serializedState);
+        }
         return payload.toString();
     }
 
@@ -933,6 +983,39 @@ public final class FabricEventLogger {
         return simplifyIdentifier(Registries.ENTITY_TYPE.getId(entity.getType()).toString());
     }
 
+    private String describeKillActor(Entity actor, DamageSource damageSource) {
+        if (actor instanceof ServerPlayerEntity) {
+            return actor.getName().getString();
+        }
+        if (actor != null) {
+            return "#" + describeEntityType(actor);
+        }
+        return describeEnvironmentDamageSource(damageSource);
+    }
+
+    private String describeEnvironmentDamageSource(DamageSource damageSource) {
+        if (damageSource == null || damageSource.getName() == null || damageSource.getName().isBlank()) {
+            return null;
+        }
+        String name = damageSource.getName().toLowerCase(Locale.ROOT);
+        if (name.contains("lava")) {
+            return "#lava";
+        }
+        if (name.contains("fire")) {
+            return "#fire";
+        }
+        if (name.contains("explosion")) {
+            return "#explosion";
+        }
+        if (name.contains("magic")) {
+            return "#magic";
+        }
+        if (name.contains("wither")) {
+            return "#wither_effect";
+        }
+        return "#" + simplifyIdentifier(name);
+    }
+
     private void appendArmorStandEquipment(StringBuilder builder, ArmorStandEntity armorStand, char separator) {
         appendEquipment(builder, "feet", armorStand.getEquippedStack(EquipmentSlot.FEET), separator);
         appendEquipment(builder, "legs", armorStand.getEquippedStack(EquipmentSlot.LEGS), separator);
@@ -962,4 +1045,13 @@ public final class FabricEventLogger {
             + ", pending-writes=" + database.pendingWrites()
             + ", consumer-paused=" + database.writesPaused();
     }
+
+    private CoreProtectFabricConfig configFor(ServerWorld world) {
+        return configFor(world == null ? null : world.getRegistryKey().getValue().toString());
+    }
+
+    private CoreProtectFabricConfig configFor(String worldKey) {
+        return configs == null ? CoreProtectFabricConfig.loadDefaults() : configs.resolve(worldKey);
+    }
 }
+

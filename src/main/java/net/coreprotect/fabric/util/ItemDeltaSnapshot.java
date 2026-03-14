@@ -2,6 +2,7 @@ package net.coreprotect.fabric.util;
 
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
+import net.minecraft.registry.RegistryWrapper;
 import net.minecraft.server.network.ServerPlayerEntity;
 
 import java.util.ArrayList;
@@ -21,10 +22,14 @@ public final class ItemDeltaSnapshot {
         for (int slot = 0; slot < inventory.size(); slot++) {
             stacks.add(inventory.getStack(slot));
         }
-        return snapshotStacks(stacks);
+        return snapshotStacks(stacks, ((net.minecraft.server.world.ServerWorld) player.getEntityWorld()).getRegistryManager());
     }
 
     public static Map<LoggedItemData, Integer> snapshotStacks(Iterable<ItemStack> stacks) {
+        return snapshotStacks(stacks, null);
+    }
+
+    public static Map<LoggedItemData, Integer> snapshotStacks(Iterable<ItemStack> stacks, RegistryWrapper.WrapperLookup lookup) {
         Map<LoggedItemData, Integer> counts = new HashMap<>();
         if (stacks == null) {
             return counts;
@@ -37,7 +42,7 @@ public final class ItemDeltaSnapshot {
                 continue;
             }
 
-            counts.merge(LoggedItemData.fromStack(stack), stack.getCount(), Integer::sum);
+            counts.merge(LoggedItemData.fromStack(stack, lookup), stack.getCount(), Integer::sum);
         }
         return counts;
     }

@@ -4,6 +4,7 @@ import net.coreprotect.fabric.CoreProtectFabricMod;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.decoration.LeashKnotEntity;
 import net.minecraft.item.LeadItem;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.ActionResult;
@@ -22,23 +23,28 @@ import java.util.Set;
 @Mixin(LeadItem.class)
 public abstract class LeadItemMixin {
     @Unique
-    private final Set<Integer> coreprotect$beforeLeashKnotIds = new HashSet<>();
+    private static final ThreadLocal<Set<Integer>> coreprotect$beforeLeashKnotIds = ThreadLocal.withInitial(HashSet::new);
 
     @Inject(method = "attachHeldMobsToBlock", at = @At("HEAD"))
-    private void coreprotect$captureLeashKnotPlacement(ServerPlayerEntity player, World world, BlockPos pos, CallbackInfoReturnable<ActionResult> cir) {
-        coreprotect$beforeLeashKnotIds.clear();
+    private static void coreprotect$captureLeashKnotPlacement(PlayerEntity player, World world, BlockPos pos, CallbackInfoReturnable<ActionResult> cir) {
+        Set<Integer> knownIds = coreprotect$beforeLeashKnotIds.get();
+        knownIds.clear();
         if (!(world instanceof ServerWorld serverWorld)) {
             return;
         }
         for (LeashKnotEntity leashKnotEntity : serverWorld.getEntitiesByClass(LeashKnotEntity.class, Box.of(pos.toCenterPos(), 2.0D, 2.0D, 2.0D), Entity::isAlive)) {
-            coreprotect$beforeLeashKnotIds.add(leashKnotEntity.getId());
+            knownIds.add(leashKnotEntity.getId());
         }
     }
 
     @Inject(method = "attachHeldMobsToBlock", at = @At("RETURN"))
-    private void coreprotect$logLeashKnotPlacement(ServerPlayerEntity player, World world, BlockPos pos, CallbackInfoReturnable<ActionResult> cir) {
+    private static void coreprotect$logLeashKnotPlacement(PlayerEntity player, World world, BlockPos pos, CallbackInfoReturnable<ActionResult> cir) {
+        Set<Integer> knownIds = coreprotect$beforeLeashKnotIds.get();
         try {
             if (!cir.getReturnValue().isAccepted()) {
+                return;
+            }
+            if (!(player instanceof ServerPlayerEntity serverPlayer)) {
                 return;
             }
             if (!(world instanceof ServerWorld serverWorld)) {
@@ -46,15 +52,15 @@ public abstract class LeadItemMixin {
             }
 
             for (LeashKnotEntity leashKnotEntity : serverWorld.getEntitiesByClass(LeashKnotEntity.class, Box.of(pos.toCenterPos(), 2.0D, 2.0D, 2.0D), Entity::isAlive)) {
-                if (coreprotect$beforeLeashKnotIds.contains(leashKnotEntity.getId())) {
+                if (knownIds.contains(leashKnotEntity.getId())) {
                     continue;
                 }
-                CoreProtectFabricMod.logEntityPlace(player, serverWorld, leashKnotEntity.getBlockPos(), leashKnotEntity);
+                CoreProtectFabricMod.logEntityPlace(serverPlayer, serverWorld, leashKnotEntity.getBlockPos(), leashKnotEntity);
                 break;
             }
         }
         finally {
-            coreprotect$beforeLeashKnotIds.clear();
+            knownIds.clear();
         }
     }
 }

@@ -7,6 +7,8 @@ import java.util.Locale;
 import net.coreprotect.fabric.CoreProtectFabricMod;
 import net.coreprotect.fabric.FabricRuntime;
 import net.coreprotect.fabric.db.StoredEventRecord;
+import net.coreprotect.fabric.language.PhraseService;
+import net.coreprotect.language.Phrase;
 import net.coreprotect.fabric.log.CoreProtectEventType;
 import net.coreprotect.fabric.service.RollbackExecutionResult;
 import net.coreprotect.fabric.service.RollbackService;
@@ -14,9 +16,11 @@ import net.coreprotect.fabric.util.QueryBounds;
 import net.coreprotect.fabric.util.TransientLookupCache;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
+import net.minecraft.block.Blocks;
 import net.minecraft.entity.EntityType;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
+import net.minecraft.registry.tag.BlockTags;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
@@ -128,6 +132,10 @@ public final class CoreProtectFabricAPI {
             return legacy.length < 13 ? null : legacy[5];
         }
 
+        public String getTypeKey() {
+            return getType();
+        }
+
         public int getData() {
             if (record != null) {
                 return 0;
@@ -140,6 +148,10 @@ public final class CoreProtectFabricAPI {
                 return legacyBlockData(record);
             }
             return legacy.length < 13 ? null : legacy[12];
+        }
+
+        public String getBlockDataString() {
+            return getBlockData();
         }
 
         public boolean hasPosition() {
@@ -192,6 +204,10 @@ public final class CoreProtectFabricAPI {
             return legacy.length < 13 ? (legacy.length > 5 ? legacy[5] : "") : legacy[9];
         }
 
+        public String getWorldKey() {
+            return worldName();
+        }
+
         private int parseInteger(String value, int fallback) {
             try {
                 return value == null ? fallback : Integer.parseInt(value);
@@ -220,7 +236,7 @@ public final class CoreProtectFabricAPI {
     }
 
     public void testAPI() {
-        CoreProtectFabricMod.LOGGER.info("CoreProtect Fabric API test successful.");
+        CoreProtectFabricMod.LOGGER.info(Phrase.build(Phrase.API_TEST));
     }
 
     public boolean isEnabled() {
@@ -1035,11 +1051,12 @@ public final class CoreProtectFabricAPI {
 
         List<String> normalized = new ArrayList<>();
         for (Object filter : filters) {
-            String mapped = mapTargetFilter(filter);
-            if (mapped == null || containsIgnoreCase(normalized, mapped)) {
-                continue;
+            for (String mapped : expandTargetFilters(filter)) {
+                if (mapped == null || containsIgnoreCase(normalized, mapped)) {
+                    continue;
+                }
+                normalized.add(mapped);
             }
-            normalized.add(mapped);
         }
         return normalized.isEmpty() ? null : normalized;
     }
@@ -1051,13 +1068,94 @@ public final class CoreProtectFabricAPI {
 
         List<String> normalized = new ArrayList<>();
         for (String filter : filters) {
-            String mapped = mapTargetFilter(filter);
-            if (mapped == null || containsIgnoreCase(normalized, mapped)) {
-                continue;
+            for (String mapped : expandTargetFilters(filter)) {
+                if (mapped == null || containsIgnoreCase(normalized, mapped)) {
+                    continue;
+                }
+                normalized.add(mapped);
             }
-            normalized.add(mapped);
         }
         return normalized.isEmpty() ? null : normalized;
+    }
+
+    private List<String> expandTargetFilters(Object filter) {
+        if (filter instanceof String value) {
+            String normalizedValue = trimToNull(value);
+            if ("#natural".equalsIgnoreCase(normalizedValue)) {
+                return naturalTargetFilters();
+            }
+        }
+
+        String mapped = mapTargetFilter(filter);
+        if (mapped == null) {
+            return List.of();
+        }
+        return List.of(mapped);
+    }
+
+    private List<String> naturalTargetFilters() {
+        List<String> targets = new ArrayList<>();
+        addNaturalTagTargets(targets, BlockTags.LOGS);
+        addNaturalTagTargets(targets, BlockTags.LEAVES);
+        addNaturalTagTargets(targets, BlockTags.SAND);
+        addNaturalTagTargets(targets, BlockTags.ICE);
+        addTargetId(targets, Blocks.STONE);
+        addTargetId(targets, Blocks.GRASS_BLOCK);
+        addTargetId(targets, Blocks.DIRT);
+        addTargetId(targets, Blocks.COARSE_DIRT);
+        addTargetId(targets, Blocks.ROOTED_DIRT);
+        addTargetId(targets, Blocks.PODZOL);
+        addTargetId(targets, Blocks.MYCELIUM);
+        addTargetId(targets, Blocks.CLAY);
+        addTargetId(targets, Blocks.SNOW);
+        addTargetId(targets, Blocks.CACTUS);
+        addTargetId(targets, Blocks.SUGAR_CANE);
+        addTargetId(targets, Blocks.BAMBOO);
+        addTargetId(targets, Blocks.BAMBOO_SAPLING);
+        addTargetId(targets, Blocks.KELP);
+        addTargetId(targets, Blocks.KELP_PLANT);
+        addTargetId(targets, Blocks.CHORUS_FLOWER);
+        addTargetId(targets, Blocks.CHORUS_PLANT);
+        addTargetId(targets, Blocks.BROWN_MUSHROOM);
+        addTargetId(targets, Blocks.RED_MUSHROOM);
+        addTargetId(targets, Blocks.BROWN_MUSHROOM_BLOCK);
+        addTargetId(targets, Blocks.RED_MUSHROOM_BLOCK);
+        addTargetId(targets, Blocks.MUSHROOM_STEM);
+        addTargetId(targets, Blocks.SWEET_BERRY_BUSH);
+        addTargetId(targets, Blocks.NETHER_WART);
+        addTargetId(targets, Blocks.PUMPKIN);
+        addTargetId(targets, Blocks.MELON);
+        addTargetId(targets, Blocks.PUMPKIN_STEM);
+        addTargetId(targets, Blocks.MELON_STEM);
+        addTargetId(targets, Blocks.CORNFLOWER);
+        addTargetId(targets, Blocks.LILY_OF_THE_VALLEY);
+        addTargetId(targets, Blocks.WITHER_ROSE);
+        addTargetId(targets, Blocks.FERN);
+        addTargetId(targets, Blocks.DEAD_BUSH);
+        addTargetId(targets, Blocks.DANDELION);
+        addTargetId(targets, Blocks.POPPY);
+        addTargetId(targets, Blocks.BLUE_ORCHID);
+        addTargetId(targets, Blocks.ALLIUM);
+        addTargetId(targets, Blocks.AZURE_BLUET);
+        addTargetId(targets, Blocks.RED_TULIP);
+        addTargetId(targets, Blocks.ORANGE_TULIP);
+        addTargetId(targets, Blocks.WHITE_TULIP);
+        addTargetId(targets, Blocks.PINK_TULIP);
+        addTargetId(targets, Blocks.OXEYE_DAISY);
+        return targets;
+    }
+
+    private void addNaturalTagTargets(List<String> targets, net.minecraft.registry.tag.TagKey<net.minecraft.block.Block> tag) {
+        for (net.minecraft.registry.entry.RegistryEntry<Block> entry : Registries.BLOCK.iterateEntries(tag)) {
+            addTargetId(targets, entry.value());
+        }
+    }
+
+    private void addTargetId(List<String> targets, Block block) {
+        String normalized = normalizeIdentifier(Registries.BLOCK.getId(block));
+        if (normalized != null && !containsIgnoreCase(targets, normalized)) {
+            targets.add(normalized);
+        }
     }
 
     private String mapTargetFilter(Object filter) {

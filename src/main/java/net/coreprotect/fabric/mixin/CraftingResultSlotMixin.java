@@ -32,11 +32,12 @@ public abstract class CraftingResultSlotMixin {
 
     @Inject(method = "onTakeItem", at = @At("HEAD"))
     private void coreprotect$captureCraftingInputs(PlayerEntity player, ItemStack stack, CallbackInfo ci) {
-        coreprotect$beforeInputs = ItemDeltaSnapshot.snapshotStacks(input.getHeldStacks());
-        if (player instanceof ServerPlayerEntity serverPlayerEntity) {
+        if (player instanceof ServerPlayerEntity serverPlayerEntity && player.getEntityWorld() instanceof ServerWorld serverWorld) {
+            coreprotect$beforeInputs = ItemDeltaSnapshot.snapshotStacks(input.getHeldStacks(), serverWorld.getRegistryManager());
             coreprotect$beforePlayerInventory = ItemDeltaSnapshot.snapshotPlayerInventory(serverPlayerEntity);
         }
         else {
+            coreprotect$beforeInputs = ItemDeltaSnapshot.snapshotStacks(input.getHeldStacks());
             coreprotect$beforePlayerInventory = Map.of();
         }
     }
@@ -51,7 +52,7 @@ public abstract class CraftingResultSlotMixin {
                 return;
             }
 
-            Map<LoggedItemData, Integer> afterInputs = ItemDeltaSnapshot.snapshotStacks(input.getHeldStacks());
+            Map<LoggedItemData, Integer> afterInputs = ItemDeltaSnapshot.snapshotStacks(input.getHeldStacks(), serverWorld.getRegistryManager());
             Map<LoggedItemData, Integer> afterPlayerInventory = ItemDeltaSnapshot.snapshotPlayerInventory(serverPlayerEntity);
             for (ItemDeltaSnapshot.ItemDelta delta : ItemDeltaSnapshot.diff(coreprotect$beforeInputs, afterInputs)) {
                 if (delta.delta() < 0) {
@@ -67,7 +68,7 @@ public abstract class CraftingResultSlotMixin {
             }
 
             if (!stack.isEmpty()) {
-                LoggedItemData craftedItem = LoggedItemData.fromStack(stack);
+                LoggedItemData craftedItem = LoggedItemData.fromStack(stack, serverWorld.getRegistryManager());
                 int createdCount = ItemDeltaSnapshot.countDelta(coreprotect$beforePlayerInventory, afterPlayerInventory, craftedItem);
                 if (createdCount <= 0) {
                     createdCount = stack.getCount();

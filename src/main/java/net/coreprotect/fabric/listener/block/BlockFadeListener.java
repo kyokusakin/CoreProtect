@@ -12,7 +12,7 @@ public final class BlockFadeListener {
 
     public static void logTurtleEggFade(ServerWorld world, BlockPos pos, BlockState previousState) {
         FabricRuntime runtime = CoreProtectFabricMod.getRuntime();
-        if (runtime == null || previousState == null || previousState.isAir() || !runtime.config().logEntityChanges()) {
+        if (runtime == null || previousState == null || previousState.isAir() || !runtime.config(world).logEntityChanges()) {
             return;
         }
 

@@ -2,7 +2,6 @@ package net.coreprotect.fabric.listener.block;
 
 import net.coreprotect.fabric.CoreProtectFabricMod;
 import net.coreprotect.fabric.util.BlockStateSerializer;
-import net.coreprotect.fabric.util.ItemDeltaSnapshot;
 import net.coreprotect.fabric.util.LoggedItemData;
 import net.minecraft.item.ItemStack;
 import net.minecraft.screen.slot.SlotActionType;
@@ -27,6 +26,9 @@ public final class BlockPlaceListener {
         if (placedBook == null || placedBook.isEmpty()) {
             return;
         }
+        if (CoreProtectFabricMod.getRuntime() == null || !CoreProtectFabricMod.getRuntime().config(world).itemTransactions()) {
+            return;
+        }
 
         String containerType = BlockStateSerializer.describeBlock(world.getBlockState(pos));
         CoreProtectFabricMod.logContainerTransaction(
@@ -42,14 +44,5 @@ public final class BlockPlaceListener {
             ItemStack.EMPTY,
             ItemStack.EMPTY
         );
-
-        for (ItemDeltaSnapshot.ItemDelta delta : ItemDeltaSnapshot.diff(beforePlayerInventory, afterPlayerInventory)) {
-            if (delta.delta() > 0) {
-                CoreProtectFabricMod.logItemPickup(player, world.getRegistryKey().getValue().toString(), pos, delta.item(), delta.delta(), containerType);
-            }
-            else {
-                CoreProtectFabricMod.logItemDrop(player, world.getRegistryKey().getValue().toString(), pos, delta.item(), -delta.delta(), containerType);
-            }
-        }
     }
 }

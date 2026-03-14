@@ -16,7 +16,7 @@ public final class PlayerBucketEmptyListener {
 
     public static void logBucketEmpty(ServerPlayerEntity player, ServerWorld world, BlockPos pos, Fluid fluid) {
         FabricRuntime runtime = CoreProtectFabricMod.getRuntime();
-        if (runtime == null || !runtime.config().logBuckets()) {
+        if (runtime == null || !runtime.config(world).logBuckets()) {
             return;
         }
 

@@ -12,7 +12,7 @@ public final class LeavesDecayListener {
 
     public static void logLeavesDecay(ServerWorld world, BlockPos pos, BlockState previousState) {
         FabricRuntime runtime = CoreProtectFabricMod.getRuntime();
-        if (runtime == null || previousState == null || previousState.isAir() || !runtime.config().leafDecay()) {
+        if (runtime == null || previousState == null || previousState.isAir() || !runtime.config(world).leafDecay()) {
             return;
         }
 

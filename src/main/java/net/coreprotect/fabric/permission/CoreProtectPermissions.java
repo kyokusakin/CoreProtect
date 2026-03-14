@@ -1,6 +1,8 @@
 package net.coreprotect.fabric.permission;
 
 import me.lucko.fabric.api.permissions.v0.Permissions;
+import net.coreprotect.fabric.command.CoreProtectText;
+import net.coreprotect.language.Phrase;
 import net.coreprotect.fabric.log.CoreProtectEventType;
 import net.minecraft.command.permission.PermissionLevel;
 import net.minecraft.server.command.ServerCommandSource;
@@ -13,6 +15,7 @@ import java.util.Set;
 
 public final class CoreProtectPermissions {
     public static final String ALL = "coreprotect.*";
+    public static final String CO = "coreprotect.co";
     public static final String STATUS = "coreprotect.status";
     public static final String INSPECT = "coreprotect.inspect";
     public static final String HELP = "coreprotect.help";
@@ -45,9 +48,13 @@ public final class CoreProtectPermissions {
     private static final PermissionLevel STATUS_FALLBACK_LEVEL = PermissionLevel.fromLevel(2);
     private static final PermissionLevel ROLLBACK_FALLBACK_LEVEL = PermissionLevel.fromLevel(4);
     private static final PermissionLevel ADMIN_FALLBACK_LEVEL = PermissionLevel.fromLevel(4);
-    private static final Text NO_PERMISSION = Text.literal("CoreProtect - You do not have permission to do that.");
+    private static final Text NO_PERMISSION = CoreProtectText.prefixed(Phrase.build(Phrase.NO_PERMISSION));
 
     private CoreProtectPermissions() {
+    }
+
+    public static boolean canAccessCoreProtectCommand(ServerCommandSource source) {
+        return hasAny(source, STATUS_FALLBACK_LEVEL, CO, ALL, STATUS, INSPECT, HELP, LOOKUP, ROLLBACK, RESTORE, TELEPORT, PURGE, RELOAD);
     }
 
     public static boolean canUseStatus(ServerCommandSource source, boolean notify) {

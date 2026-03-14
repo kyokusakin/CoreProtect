@@ -119,6 +119,16 @@ public abstract class DispenserBlockMixin {
             else if (context.chosenStack().isOf(Items.FLINT_AND_STEEL)) {
                 BlockIgniteListener.logFireIgnite("#fire", world, context.targetPos(), context.beforeTargetState(), afterTargetState);
             }
+            else if (context.chosenStack().getItem() instanceof net.minecraft.item.ProjectileItem) {
+                CoreProtectFabricMod.getRuntime().logger().logItemShoot(
+                    "#dispenser",
+                    world.getRegistryKey().getValue().toString(),
+                    context.targetPos(),
+                    net.coreprotect.fabric.util.LoggedItemData.fromStack(context.chosenStack(), world.getRegistryManager()),
+                    1,
+                    null
+                );
+            }
 
             if (context.beforeEntityIds() != null) {
                 Entity placedEntity = coreprotect$findNewEntity(world, context.targetPos(), context.beforeEntityIds());

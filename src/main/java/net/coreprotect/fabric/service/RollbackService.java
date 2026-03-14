@@ -1,16 +1,26 @@
 package net.coreprotect.fabric.service;
 
+import com.mojang.authlib.GameProfile;
 import net.coreprotect.fabric.db.CoreProtectDatabase;
 import net.coreprotect.fabric.db.StoredEventRecord;
 import net.coreprotect.fabric.log.CoreProtectEventType;
 import net.coreprotect.fabric.util.BlockStateSerializer;
+import net.coreprotect.fabric.util.LoggedItemChange;
+import net.coreprotect.fabric.util.LoggedSignState;
 import net.coreprotect.fabric.util.QueryBounds;
+import net.coreprotect.fabric.config.CoreProtectFabricConfig;
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
+import net.minecraft.block.Blocks;
+import net.minecraft.block.entity.BlockEntity;
+import net.minecraft.block.entity.LecternBlockEntity;
 import net.minecraft.block.entity.SignBlockEntity;
 import net.minecraft.block.entity.SignText;
+import net.minecraft.inventory.Inventory;
+import net.minecraft.inventory.StackWithSlot;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EquipmentSlot;
+import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.decoration.ArmorStandEntity;
 import net.minecraft.entity.decoration.EndCrystalEntity;
 import net.minecraft.entity.decoration.ItemFrameEntity;
@@ -20,43 +30,70 @@ import net.minecraft.entity.vehicle.AbstractMinecartEntity;
 import net.minecraft.entity.SpawnReason;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NbtCompound;
+import net.minecraft.nbt.NbtIo;
+import net.minecraft.nbt.NbtOps;
 import net.minecraft.nbt.StringNbtReader;
 import net.minecraft.registry.RegistryKey;
 import net.minecraft.registry.RegistryKeys;
+import net.minecraft.registry.Registries;
 import net.minecraft.registry.entry.RegistryEntry;
+import net.minecraft.registry.RegistryOps;
+import net.minecraft.screen.slot.SlotActionType;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.PlayerConfigEntry;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.storage.NbtReadView;
 import net.minecraft.storage.NbtWriteView;
-import net.minecraft.text.Text;
 import net.minecraft.util.ErrorReporter;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.Util;
+import net.minecraft.util.WorldSavePath;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.network.packet.c2s.common.SyncedClientOptions;
+import net.minecraft.state.property.Properties;
 import org.slf4j.Logger;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.StringJoiner;
+import java.util.Optional;
+import java.util.UUID;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 public final class RollbackService {
     private static final List<CoreProtectEventType> SUPPORTED_EVENT_TYPES = List.of(
         CoreProtectEventType.BLOCK_BREAK,
         CoreProtectEventType.BLOCK_PLACE,
-        CoreProtectEventType.SIGN_CHANGE
+        CoreProtectEventType.SIGN_CHANGE,
+        CoreProtectEventType.CONTAINER_TRANSACTION,
+        CoreProtectEventType.ITEM_PICKUP,
+        CoreProtectEventType.ITEM_DROP,
+        CoreProtectEventType.ITEM_THROW,
+        CoreProtectEventType.ITEM_SHOOT,
+        CoreProtectEventType.ITEM_BUY,
+        CoreProtectEventType.ITEM_SELL,
+        CoreProtectEventType.ITEM_CREATE,
+        CoreProtectEventType.ITEM_DESTROY
     );
 
     private final CoreProtectDatabase database;
+    private final WorldConfigService configs;
     private final Logger logger;
 
-    public RollbackService(CoreProtectDatabase database, Logger logger) {
+    public RollbackService(CoreProtectDatabase database, WorldConfigService configs, Logger logger) {
         this.database = database;
+        this.configs = configs;
         this.logger = logger;
     }
 
@@ -92,7 +129,7 @@ public final class RollbackService {
         List<String> includeTargets,
         List<String> excludeTargets
     ) {
-        List<CoreProtectEventType> rollbackTypes = resolveRollbackTypes(actionFilter);
+        List<CoreProtectEventType> rollbackTypes = resolveRollbackTypes(bounds.worldKey(), actionFilter);
         List<StoredEventRecord> candidates = database.lookupRollbackCandidates(
             bounds.worldKey(),
             bounds.minimum(),
@@ -108,7 +145,7 @@ public final class RollbackService {
             excludeTargets
         );
         candidates = filterExactBounds(bounds, candidates);
-        return applyCandidates(player, candidates, restore, -1, seconds, summarizeActors(actorFilters));
+        return applyCandidates(((ServerWorld) player.getEntityWorld()).getServer(), candidates, restore, -1, seconds, summarizeActors(actorFilters));
     }
 
     public RollbackExecutionResult applyBetween(
@@ -123,7 +160,7 @@ public final class RollbackService {
         List<String> includeTargets,
         List<String> excludeTargets
     ) {
-        List<CoreProtectEventType> rollbackTypes = resolveRollbackTypes(actionFilter);
+        List<CoreProtectEventType> rollbackTypes = resolveRollbackTypes(bounds.worldKey(), actionFilter);
         List<StoredEventRecord> candidates = database.lookupRollbackCandidatesBetween(
             bounds.worldKey(),
             bounds.minimum(),
@@ -139,7 +176,7 @@ public final class RollbackService {
             excludeTargets
         );
         candidates = filterExactBounds(bounds, candidates);
-        return applyCandidates(player, candidates, restore, -1, describeSeconds(notBefore, notAfter), summarizeActors(actorFilters));
+        return applyCandidates(((ServerWorld) player.getEntityWorld()).getServer(), candidates, restore, -1, describeSeconds(notBefore, notAfter), summarizeActors(actorFilters));
     }
 
     public RollbackExecutionResult apply(
@@ -155,7 +192,7 @@ public final class RollbackService {
         List<String> includeTargets,
         List<String> excludeTargets
     ) {
-        List<CoreProtectEventType> rollbackTypes = resolveRollbackTypes(actionFilter);
+        List<CoreProtectEventType> rollbackTypes = resolveRollbackTypes(worldKey, actionFilter);
         BlockPos center = radius == null ? null : player.getBlockPos();
         List<StoredEventRecord> candidates = database.lookupRollbackCandidates(
             worldKey,
@@ -171,7 +208,7 @@ public final class RollbackService {
             includeTargets,
             excludeTargets
         );
-        return applyCandidates(player, candidates, restore, radius == null ? -1 : radius, seconds, summarizeActors(actorFilters));
+        return applyCandidates(((ServerWorld) player.getEntityWorld()).getServer(), candidates, restore, radius == null ? -1 : radius, seconds, summarizeActors(actorFilters));
     }
 
     public RollbackExecutionResult applyBetween(
@@ -187,7 +224,7 @@ public final class RollbackService {
         List<String> includeTargets,
         List<String> excludeTargets
     ) {
-        List<CoreProtectEventType> rollbackTypes = resolveRollbackTypes(actionFilter);
+        List<CoreProtectEventType> rollbackTypes = resolveRollbackTypes(bounds == null ? worldKey : bounds.worldKey(), actionFilter);
         List<StoredEventRecord> candidates;
         if (bounds != null) {
             candidates = database.lookupRollbackCandidatesBetween(
@@ -222,7 +259,58 @@ public final class RollbackService {
                 excludeTargets
             );
         }
-        return applyCandidates(player, candidates, restore, -1, describeSeconds(notBefore, notAfter), summarizeActors(actorFilters));
+        return applyCandidates(((ServerWorld) player.getEntityWorld()).getServer(), candidates, restore, -1, describeSeconds(notBefore, notAfter), summarizeActors(actorFilters));
+    }
+
+    public RollbackExecutionResult applyBetween(
+        MinecraftServer server,
+        long notBefore,
+        long notAfter,
+        String worldKey,
+        QueryBounds bounds,
+        List<String> actorFilters,
+        List<String> excludeActorFilters,
+        boolean restore,
+        List<CoreProtectEventType> actionFilter,
+        List<String> includeTargets,
+        List<String> excludeTargets
+    ) {
+        List<CoreProtectEventType> rollbackTypes = resolveRollbackTypes(bounds == null ? worldKey : bounds.worldKey(), actionFilter);
+        List<StoredEventRecord> candidates;
+        if (bounds != null) {
+            candidates = database.lookupRollbackCandidatesBetween(
+                bounds.worldKey(),
+                bounds.minimum(),
+                bounds.maximum(),
+                notBefore,
+                notAfter,
+                actorFilters,
+                excludeActorFilters,
+                restore,
+                restore,
+                rollbackTypes,
+                includeTargets,
+                excludeTargets
+            );
+            candidates = filterExactBounds(bounds, candidates);
+        }
+        else {
+            candidates = database.lookupRollbackCandidatesBetween(
+                worldKey,
+                null,
+                null,
+                notBefore,
+                notAfter,
+                actorFilters,
+                excludeActorFilters,
+                restore,
+                restore,
+                rollbackTypes,
+                includeTargets,
+                excludeTargets
+            );
+        }
+        return applyCandidates(server, candidates, restore, -1, describeSeconds(notBefore, notAfter), summarizeActors(actorFilters));
     }
 
     public int preview(
@@ -238,7 +326,7 @@ public final class RollbackService {
         List<String> includeTargets,
         List<String> excludeTargets
     ) {
-        List<CoreProtectEventType> rollbackTypes = resolveRollbackTypes(actionFilter);
+        List<CoreProtectEventType> rollbackTypes = resolveRollbackTypes(worldKey, actionFilter);
         BlockPos center = radius == null ? null : player.getBlockPos();
         return database.lookupRollbackCandidates(
             worldKey,
@@ -268,7 +356,7 @@ public final class RollbackService {
         List<String> includeTargets,
         List<String> excludeTargets
     ) {
-        List<CoreProtectEventType> rollbackTypes = resolveRollbackTypes(actionFilter);
+        List<CoreProtectEventType> rollbackTypes = resolveRollbackTypes(bounds.worldKey(), actionFilter);
         return filterExactBounds(bounds, database.lookupRollbackCandidates(
             bounds.worldKey(),
             bounds.minimum(),
@@ -298,7 +386,7 @@ public final class RollbackService {
         List<String> includeTargets,
         List<String> excludeTargets
     ) {
-        List<CoreProtectEventType> rollbackTypes = resolveRollbackTypes(actionFilter);
+        List<CoreProtectEventType> rollbackTypes = resolveRollbackTypes(bounds == null ? worldKey : bounds.worldKey(), actionFilter);
         List<StoredEventRecord> candidates;
         if (bounds != null) {
             candidates = database.lookupRollbackCandidatesBetween(
@@ -350,9 +438,13 @@ public final class RollbackService {
         return filtered;
     }
 
-    private RollbackExecutionResult applyCandidates(ServerPlayerEntity player, List<StoredEventRecord> candidates, boolean restore, int radius, int seconds, String actorSummary) {
+    private RollbackExecutionResult applyCandidates(MinecraftServer server, List<StoredEventRecord> candidates, boolean restore, int radius, int seconds, String actorSummary) {
         if (candidates.isEmpty()) {
             return new RollbackExecutionResult(restore, 0, 0, 0, radius, seconds, actorSummary);
+        }
+
+        if (restore) {
+            Collections.reverse(candidates);
         }
 
         int changed = 0;
@@ -362,7 +454,7 @@ public final class RollbackService {
                 continue;
             }
 
-            ServerWorld targetWorld = resolveWorld(player, event.worldKey());
+            ServerWorld targetWorld = resolveWorld(server, event.worldKey());
             if (targetWorld == null) {
                 logger.warn("Skipping rollback event {} because world {} is not loaded", event.id(), event.worldKey());
                 continue;
@@ -388,7 +480,7 @@ public final class RollbackService {
                 continue;
             }
 
-            ServerWorld targetWorld = resolveWorld(player, event.worldKey());
+            ServerWorld targetWorld = resolveWorld(((ServerWorld) player.getEntityWorld()).getServer(), event.worldKey());
             if (targetWorld == null) {
                 continue;
             }
@@ -406,7 +498,8 @@ public final class RollbackService {
     }
 
     private BlockState previewBlockState(ServerWorld world, StoredEventRecord event, boolean restore) {
-        return switch (event.type()) {
+        BlockState currentState = event.hasPosition() ? world.getBlockState(event.blockPos()) : null;
+        BlockState targetState = switch (event.type()) {
             case BLOCK_PLACE -> restore
                 ? BlockStateSerializer.deserialize(world, event.target(), event.payload(), logger)
                 : BlockStateSerializer.air();
@@ -415,6 +508,10 @@ public final class RollbackService {
                 : BlockStateSerializer.deserialize(world, event.target(), event.payload(), logger);
             default -> null;
         };
+        if (targetState == null) {
+            return null;
+        }
+        return normalizeRollbackTargetState(event, restore, currentState, targetState);
     }
 
     private boolean applyEvent(ServerWorld world, StoredEventRecord event, boolean restore) {
@@ -424,12 +521,98 @@ public final class RollbackService {
             case BLOCK_PLACE:
             case BLOCK_BREAK:
                 return applyBlockChange(world, event, restore);
+            case CONTAINER_TRANSACTION:
+                return applyContainerTransaction(world, event, restore);
+            case ITEM_PICKUP:
+            case ITEM_DROP:
+            case ITEM_THROW:
+            case ITEM_SHOOT:
+            case ITEM_BUY:
+            case ITEM_SELL:
+            case ITEM_CREATE:
+            case ITEM_DESTROY:
+                return applyItemChange(world, event, restore);
             case ENTITY_PLACE:
             case ENTITY_BREAK:
+            case ENTITY_KILL:
                 return applyEntityChange(world, event, restore);
             default:
                 return false;
         }
+    }
+
+    private boolean applyContainerTransaction(ServerWorld world, StoredEventRecord event, boolean restore) {
+        ContainerTransactionPayload payload = parseContainerTransactionPayload(event.payload());
+        if (payload == null) {
+            logger.warn("Skipping container transaction at {} due to unreadable payload", event.blockPos());
+            return false;
+        }
+            if (payload.change() == null || payload.added() == null) {
+            return false;
+        }
+
+            boolean addItems = payload.added() == restore;
+        BlockEntity blockEntity = world.getBlockEntity(event.blockPos());
+        if (blockEntity instanceof LecternBlockEntity lecternBlockEntity) {
+                return addItems
+                    ? addItemsToLectern(world, event.blockPos(), lecternBlockEntity, payload.change())
+                    : removeItemsFromLectern(world, event.blockPos(), lecternBlockEntity, payload.change());
+        }
+
+        if (!(blockEntity instanceof Inventory inventory)) {
+            return false;
+        }
+
+            boolean changed = addItems
+                ? addItemsToInventory(world, inventory, payload.change())
+                : removeItemsFromInventory(world, inventory, payload.change());
+            if (!changed) {
+                return false;
+            }
+
+        inventory.markDirty();
+        BlockState state = world.getBlockState(event.blockPos());
+        world.updateListeners(event.blockPos(), state, state, Block.NOTIFY_ALL);
+        return true;
+    }
+
+    private boolean applyItemChange(ServerWorld world, StoredEventRecord event, boolean restore) {
+        LoggedItemChange change = LoggedItemChange.parse(event.target(), event.payload());
+        if (change == null || change.item() == null || change.item().itemKey().isBlank()) {
+            return false;
+        }
+
+        boolean addItems = switch (event.type()) {
+            case ITEM_DROP, ITEM_THROW, ITEM_SHOOT, ITEM_SELL, ITEM_DESTROY -> !restore;
+            case ITEM_PICKUP, ITEM_BUY, ITEM_CREATE -> restore;
+            default -> false;
+        };
+
+        ServerPlayerEntity targetPlayer = resolveActorPlayer(world, event);
+        if (targetPlayer != null) {
+            boolean changed = addItems
+                ? addItemsToPlayer(targetPlayer, change)
+                : removeItemsFromPlayer(targetPlayer, change);
+            if (changed) {
+                syncPlayerInventory(targetPlayer);
+            }
+            return changed;
+        }
+
+        OfflinePlayerInventory offlineInventory = loadOfflineActorInventory(world.getServer(), world, event);
+        if (offlineInventory == null) {
+            logger.debug("Skipping item rollback for {} because actor {} is not available online or offline", event.id(), event.actorName());
+            return false;
+        }
+
+        boolean changed = addItems
+            ? addItemsToPlayer(offlineInventory.player(), change)
+            : removeItemsFromPlayer(offlineInventory.player(), change);
+        if (!changed) {
+            return false;
+        }
+
+        return saveOfflineActorInventory(world.getServer(), offlineInventory);
     }
 
     private boolean applyBlockChange(ServerWorld world, StoredEventRecord event, boolean restore) {
@@ -455,10 +638,8 @@ public final class RollbackService {
             return false;
         }
 
-        if (hasRollbackConflict(world, event, restore, currentState, targetState)) {
-            logger.debug("Skipping {} at {} because the current state would conflict with rollback safety checks", event.type(), pos);
-            return false;
-        }
+        targetState = normalizeRollbackTargetState(event, restore, currentState, targetState);
+
         if (currentState.equals(targetState)) {
             return false;
         }
@@ -466,25 +647,17 @@ public final class RollbackService {
         return world.setBlockState(pos, targetState, Block.NOTIFY_ALL);
     }
 
-    private boolean hasRollbackConflict(ServerWorld world, StoredEventRecord event, boolean restore, BlockState currentState, BlockState targetState) {
-        BlockState loggedState = BlockStateSerializer.deserialize(world, event.target(), event.payload(), logger);
-        if (loggedState == null) {
-            return false;
+    private BlockState normalizeRollbackTargetState(StoredEventRecord event, boolean restore, BlockState currentState, BlockState targetState) {
+        if (!restore && event.type() == CoreProtectEventType.BLOCK_BREAK && targetState.isOf(Blocks.NETHER_PORTAL)) {
+            return Blocks.FIRE.getDefaultState();
         }
-
-        if (event.type() == CoreProtectEventType.BLOCK_PLACE) {
-            if (restore) {
-                return !currentState.isAir() && !currentState.equals(loggedState);
-            }
-            return !currentState.equals(loggedState) && !currentState.isAir();
+        if (targetState.isAir()
+            && currentState != null
+            && currentState.contains(Properties.WATERLOGGED)
+            && Boolean.TRUE.equals(currentState.get(Properties.WATERLOGGED))) {
+            return Blocks.WATER.getDefaultState();
         }
-        if (event.type() == CoreProtectEventType.BLOCK_BREAK) {
-            if (restore) {
-                return !currentState.equals(loggedState) && !currentState.isAir();
-            }
-            return !currentState.isAir() && !currentState.equals(targetState);
-        }
-        return false;
+        return targetState;
     }
 
     private boolean applySignChange(ServerWorld world, StoredEventRecord event, boolean restore) {
@@ -494,31 +667,33 @@ public final class RollbackService {
             return false;
         }
 
-        SignPayload payload = parseSignPayload(event.payload());
+        LoggedSignState payload = LoggedSignState.parse(event.payload());
         if (payload == null) {
             logger.warn("Skipping sign change at {} due to unreadable sign payload", pos);
             return false;
         }
 
-        String[] targetLines = restore
-            ? payload.lines()
+        LoggedSignState targetState = restore
+            ? payload
             : database.lookupPreviousSignState(event.worldKey(), pos, event.id(), payload.front());
-        return updateSignText(world, pos, (SignBlockEntity) world.getBlockEntity(pos), payload.front(), targetLines);
+        return updateSignText(world, pos, (SignBlockEntity) world.getBlockEntity(pos), targetState);
     }
 
-    private boolean updateSignText(ServerWorld world, BlockPos pos, SignBlockEntity signBlockEntity, boolean front, String[] targetLines) {
-        String[] normalizedLines = normalizeLines(targetLines);
-        String[] currentLines = readSignLines(signBlockEntity, front);
-        if (Arrays.equals(currentLines, normalizedLines)) {
+    private boolean updateSignText(ServerWorld world, BlockPos pos, SignBlockEntity signBlockEntity, LoggedSignState targetState) {
+        LoggedSignState currentState = LoggedSignState.fromBlockEntity(signBlockEntity, targetState.front());
+        if (currentState.equals(targetState)) {
             return false;
         }
 
-        SignText updatedText = signBlockEntity.getText(front);
-        for (int index = 0; index < normalizedLines.length; index++) {
-            updatedText = updatedText.withMessage(index, Text.literal(normalizedLines[index]));
+        boolean changed = false;
+        SignText updatedText = targetState.applyTo(signBlockEntity.getText(targetState.front()));
+        if (!signBlockEntity.getText(targetState.front()).equals(updatedText)) {
+            changed = signBlockEntity.setText(updatedText, targetState.front());
         }
-
-        if (!signBlockEntity.setText(updatedText, front)) {
+        if (signBlockEntity.isWaxed() != targetState.waxed()) {
+            changed = signBlockEntity.setWaxed(targetState.waxed()) || changed;
+        }
+        if (!changed) {
             return false;
         }
 
@@ -542,61 +717,34 @@ public final class RollbackService {
             case ENTITY_BREAK -> restore
                 ? removeLoggedEntity(world, event.blockPos(), payload)
                 : spawnLoggedEntity(world, event.blockPos(), payload);
+            case ENTITY_KILL -> restore
+                ? removeLoggedEntity(world, event.blockPos(), payload)
+                : spawnLoggedEntity(world, event.blockPos(), payload, true);
             default -> false;
         };
     }
 
-    private String[] readSignLines(SignBlockEntity signBlockEntity, boolean front) {
-        String[] lines = new String[4];
-        for (int index = 0; index < lines.length; index++) {
-            lines[index] = signBlockEntity.getText(front).getMessage(index, false).getString();
-        }
-        return lines;
-    }
-
-    private String[] normalizeLines(String[] lines) {
-        String[] normalized = new String[] { "", "", "", "" };
-        if (lines == null) {
-            return normalized;
-        }
-
-        for (int index = 0; index < normalized.length && index < lines.length; index++) {
-            normalized[index] = lines[index] == null ? "" : lines[index];
-        }
-        return normalized;
-    }
-
-    private SignPayload parseSignPayload(String payload) {
-        if (payload == null || payload.isBlank()) {
-            return null;
-        }
-
-        String[] rawParts = payload.split("\\n", -1);
-        if (rawParts.length == 0) {
-            return null;
-        }
-
-        boolean front;
-        if ("front".equalsIgnoreCase(rawParts[0])) {
-            front = true;
-        }
-        else if ("back".equalsIgnoreCase(rawParts[0])) {
-            front = false;
-        }
-        else {
-            return null;
-        }
-
-        String[] lines = new String[] { "", "", "", "" };
-        for (int index = 0; index < lines.length && index + 1 < rawParts.length; index++) {
-            lines[index] = rawParts[index + 1];
-        }
-        return new SignPayload(front, lines);
-    }
-
-    private List<CoreProtectEventType> resolveRollbackTypes(List<CoreProtectEventType> actionFilter) {
+    private List<CoreProtectEventType> resolveRollbackTypes(String worldKey, List<CoreProtectEventType> actionFilter) {
+        CoreProtectFabricConfig config = configs == null ? CoreProtectFabricConfig.loadDefaults() : configs.resolve(worldKey);
         if (actionFilter == null || actionFilter.isEmpty()) {
-            return SUPPORTED_EVENT_TYPES;
+            List<CoreProtectEventType> rollbackTypes = new ArrayList<>(SUPPORTED_EVENT_TYPES);
+            if (config.rollbackEntities()) {
+                rollbackTypes.add(CoreProtectEventType.ENTITY_PLACE);
+                rollbackTypes.add(CoreProtectEventType.ENTITY_BREAK);
+                rollbackTypes.add(CoreProtectEventType.ENTITY_KILL);
+            }
+            if (!config.rollbackItems()) {
+                rollbackTypes.remove(CoreProtectEventType.CONTAINER_TRANSACTION);
+                rollbackTypes.remove(CoreProtectEventType.ITEM_PICKUP);
+                rollbackTypes.remove(CoreProtectEventType.ITEM_DROP);
+                rollbackTypes.remove(CoreProtectEventType.ITEM_THROW);
+                rollbackTypes.remove(CoreProtectEventType.ITEM_SHOOT);
+                rollbackTypes.remove(CoreProtectEventType.ITEM_BUY);
+                rollbackTypes.remove(CoreProtectEventType.ITEM_SELL);
+                rollbackTypes.remove(CoreProtectEventType.ITEM_CREATE);
+                rollbackTypes.remove(CoreProtectEventType.ITEM_DESTROY);
+            }
+            return rollbackTypes;
         }
 
         List<CoreProtectEventType> rollbackTypes = new ArrayList<>();
@@ -604,19 +752,36 @@ public final class RollbackService {
             if (!isSupported(eventType) || rollbackTypes.contains(eventType)) {
                 continue;
             }
+            if (!config.rollbackEntities()
+                && (eventType == CoreProtectEventType.ENTITY_PLACE
+                    || eventType == CoreProtectEventType.ENTITY_BREAK
+                    || eventType == CoreProtectEventType.ENTITY_KILL)) {
+                continue;
+            }
+            if (!config.rollbackItems() && eventType == CoreProtectEventType.CONTAINER_TRANSACTION) {
+                continue;
+            }
+            if (!config.rollbackItems() && isItemRollbackEvent(eventType)) {
+                continue;
+            }
             rollbackTypes.add(eventType);
         }
-        return rollbackTypes.isEmpty() ? SUPPORTED_EVENT_TYPES : rollbackTypes;
+        return rollbackTypes;
     }
 
     public static boolean isSupported(CoreProtectEventType eventType) {
         return SUPPORTED_EVENT_TYPES.contains(eventType)
             || eventType == CoreProtectEventType.ENTITY_PLACE
-            || eventType == CoreProtectEventType.ENTITY_BREAK;
+            || eventType == CoreProtectEventType.ENTITY_BREAK
+            || eventType == CoreProtectEventType.ENTITY_KILL;
     }
 
     private boolean spawnLoggedEntity(ServerWorld world, BlockPos pos, Map<String, String> payload) {
-        if (findMatchingEntity(world, pos, payload) != null) {
+        return spawnLoggedEntity(world, pos, payload, false);
+    }
+
+    private boolean spawnLoggedEntity(ServerWorld world, BlockPos pos, Map<String, String> payload, boolean forceSpawn) {
+        if (!forceSpawn && findMatchingEntity(world, pos, payload) != null) {
             return false;
         }
 
@@ -624,7 +789,16 @@ public final class RollbackService {
         if (entity == null) {
             return false;
         }
-        return world.spawnEntity(entity);
+        
+        if (entity instanceof LivingEntity livingEntity) {
+            livingEntity.setHealth(livingEntity.getMaxHealth());
+        }
+
+        if (!world.spawnEntity(entity)) {
+            logger.warn("Rollback entity spawn failed for type {} at {}", payload.get("type"), pos);
+            return false;
+        }
+        return true;
     }
 
     private boolean removeLoggedEntity(ServerWorld world, BlockPos pos, Map<String, String> payload) {
@@ -704,6 +878,36 @@ public final class RollbackService {
     }
 
     private Entity createEntity(ServerWorld world, BlockPos pos, Map<String, String> payload) {
+        String nbtStr = payload.get("nbt");
+        String type = payload.get("type");
+
+        if (nbtStr != null && !nbtStr.isBlank()) {
+            try {
+                NbtCompound entityNbt = StringNbtReader.readCompound(nbtStr);
+                
+                if (!entityNbt.contains("id") && type != null) {
+                    entityNbt.putString("id", type);
+                }
+                
+                Entity entity = net.minecraft.entity.EntityType.loadEntityWithPassengers(
+                    entityNbt,
+                    world,
+                    net.minecraft.entity.SpawnReason.COMMAND,
+                    e -> e
+                );
+
+                if (entity != null) {
+                    entity.setPosition(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5);
+                    return entity;
+                }
+            } catch (Exception e) {
+                logger.warn("Failed to parse NBT for entity rollback", e);
+            }
+        }
+        return createBaseEntity(world, pos, payload);
+    }
+
+    private Entity createBaseEntity(ServerWorld world, BlockPos pos, Map<String, String> payload) {
         String type = payload.get("type");
         Direction facing = parseFacing(payload.get("facing"));
         if (type == null || type.isBlank()) {
@@ -713,7 +917,7 @@ public final class RollbackService {
             ItemFrameEntity itemFrameEntity = "glow_item_frame".equals(type)
                 ? new ItemFrameEntity(net.minecraft.entity.EntityType.GLOW_ITEM_FRAME, world, pos, facing)
                 : new ItemFrameEntity(world, pos, facing);
-            ItemStack stack = parseItemStack(payload.get("item"));
+            ItemStack stack = parseItemStack(world, payload.get("item"));
             if (!stack.isEmpty()) {
                 itemFrameEntity.setHeldItemStack(stack, false);
             }
@@ -738,6 +942,36 @@ public final class RollbackService {
             equipIfPresent(armorStandEntity, EquipmentSlot.HEAD, payload.get("head"));
             equipIfPresent(armorStandEntity, EquipmentSlot.MAINHAND, payload.get("mainhand"));
             equipIfPresent(armorStandEntity, EquipmentSlot.OFFHAND, payload.get("offhand"));
+
+            NbtCompound nbt = new NbtCompound();
+            boolean modified = false;
+
+            if (Boolean.TRUE.equals(parseBoolean(payload.get("ShowArms")))) {
+                nbt.putBoolean("ShowArms", true);
+                modified = true;
+            }
+            if (Boolean.TRUE.equals(parseBoolean(payload.get("Small")))) {
+                nbt.putBoolean("Small", true);
+                modified = true;
+            }
+            if (Boolean.TRUE.equals(parseBoolean(payload.get("NoBasePlate")))) {
+                nbt.putBoolean("NoBasePlate", true);
+                modified = true;
+            }
+            if (Boolean.TRUE.equals(parseBoolean(payload.get("Marker")))) {
+                nbt.putBoolean("Marker", true);
+                modified = true;
+            }
+            if (Boolean.TRUE.equals(parseBoolean(payload.get("Invisible")))) {
+                nbt.putBoolean("Invisible", true);
+                modified = true;
+            }
+
+            if (modified) {
+                net.minecraft.storage.NbtReadView readView = (net.minecraft.storage.NbtReadView) net.minecraft.storage.NbtReadView.create(net.minecraft.util.ErrorReporter.EMPTY, world.getRegistryManager(), nbt);
+                armorStandEntity.readData(readView);
+            }
+
             return armorStandEntity;
         }
         if ("end_crystal".equals(type)) {
@@ -775,12 +1009,11 @@ public final class RollbackService {
             return null;
         }
         entity.refreshPositionAndAngles(pos.getX() + 0.5D, pos.getY(), pos.getZ() + 0.5D, entity.getYaw(), entity.getPitch());
-        applyEntityNbt(entity, payload.get("nbt"));
         return entity;
     }
 
     private void equipIfPresent(ArmorStandEntity armorStandEntity, EquipmentSlot slot, String serializedStack) {
-        ItemStack stack = parseItemStack(serializedStack);
+        ItemStack stack = parseItemStack((ServerWorld) armorStandEntity.getEntityWorld(), serializedStack);
         if (stack.isEmpty()) {
             return;
         }
@@ -823,48 +1056,7 @@ public final class RollbackService {
             }
             return facing == null || decorationEntity.getHorizontalFacing() == facing;
         }
-        if (!entity.getBlockPos().equals(pos)) {
-            return false;
-        }
-        String nbtString = payload.get("nbt");
-        if (nbtString == null || nbtString.isBlank()) {
-            return true;
-        }
-        String currentNbt = serializeComparableEntityNbt(entity);
-        return currentNbt.isBlank() || currentNbt.equals(nbtString);
-    }
-
-    private void applyEntityNbt(Entity entity, String nbtString) {
-        if (nbtString == null || nbtString.isBlank()) {
-            return;
-        }
-        try {
-            NbtCompound nbt = StringNbtReader.readCompound(nbtString);
-            nbt.remove("UUID");
-            if (entity.getEntityWorld() instanceof ServerWorld serverWorld) {
-                entity.readData(NbtReadView.create(new ErrorReporter.Impl(entity.getErrorReporterContext()), serverWorld.getRegistryManager(), nbt));
-            }
-        }
-        catch (Exception exception) {
-            logger.debug("Unable to apply entity NBT for {}", simplifyEntityType(entity), exception);
-        }
-    }
-
-    private String serializeComparableEntityNbt(Entity entity) {
-        try {
-            if (!(entity.getEntityWorld() instanceof ServerWorld serverWorld)) {
-                return "";
-            }
-            NbtCompound nbt = new NbtCompound();
-            NbtWriteView writeView = NbtWriteView.create(new ErrorReporter.Impl(entity.getErrorReporterContext()), serverWorld.getRegistryManager());
-            entity.writeData(writeView);
-            nbt.copyFrom(writeView.getNbt());
-            nbt.remove("UUID");
-            return nbt.toString();
-        }
-        catch (RuntimeException exception) {
-            return "";
-        }
+        return entity.getBlockPos().equals(pos);
     }
 
     private Direction parseFacing(String value) {
@@ -935,9 +1127,22 @@ public final class RollbackService {
         return new BlockPos(x, y, z);
     }
 
-    private ItemStack parseItemStack(String value) {
+    private ItemStack parseItemStack(ServerWorld world, String value) {
         if (value == null || value.isBlank() || "empty".equalsIgnoreCase(value)) {
             return ItemStack.EMPTY;
+        }
+
+        if (world != null && value.startsWith("{")) {
+            try {
+                NbtCompound nbt = StringNbtReader.readCompound(value);
+                return ItemStack.UNCOUNTED_CODEC
+                    .parse(RegistryOps.of(NbtOps.INSTANCE, world.getRegistryManager()), nbt)
+                    .result()
+                    .orElse(ItemStack.EMPTY);
+            }
+            catch (Exception exception) {
+                logger.debug("Unable to decode serialized item stack {}", value, exception);
+            }
         }
 
         int separator = value.lastIndexOf('x');
@@ -955,6 +1160,355 @@ public final class RollbackService {
             return ItemStack.EMPTY;
         }
         return new ItemStack(net.minecraft.registry.Registries.ITEM.get(identifier), count);
+    }
+
+    private ServerPlayerEntity resolveActorPlayer(ServerWorld world, StoredEventRecord event) {
+        if (event.actorUuid() != null && !event.actorUuid().isBlank()) {
+            try {
+                ServerPlayerEntity player = world.getServer().getPlayerManager().getPlayer(java.util.UUID.fromString(event.actorUuid()));
+                if (player != null) {
+                    return player;
+                }
+            }
+            catch (IllegalArgumentException ignored) {
+            }
+        }
+        if (event.actorName() != null && !event.actorName().isBlank()) {
+            return world.getServer().getPlayerManager().getPlayer(event.actorName());
+        }
+        return null;
+    }
+
+    private boolean addItemsToPlayer(ServerPlayerEntity player, LoggedItemChange change) {
+        ItemStack stack = buildRollbackItemStack((ServerWorld) player.getEntityWorld(), change, player.getInventory());
+        if (stack.isEmpty()) {
+            return false;
+        }
+        int initialCount = stack.getCount();
+        ItemStack remaining = stack.copy();
+        player.getInventory().insertStack(remaining);
+        return remaining.getCount() < initialCount;
+    }
+
+    private boolean removeItemsFromPlayer(ServerPlayerEntity player, LoggedItemChange change) {
+        ServerWorld world = (ServerWorld) player.getEntityWorld();
+        ItemStack template = buildRollbackItemStack(world, change, player.getInventory()).copyWithCount(1);
+        if (template.isEmpty()) {
+            return false;
+        }
+
+        int initialRemaining = change.count();
+        int remaining = initialRemaining;
+        for (int slot = 0; slot < player.getInventory().size() && remaining > 0; slot++) {
+            ItemStack stack = player.getInventory().getStack(slot);
+            if (!matchesRollbackItem(stack, template, change)) {
+                continue;
+            }
+
+            int remove = Math.min(remaining, stack.getCount());
+            stack.decrement(remove);
+            if (stack.isEmpty()) {
+                player.getInventory().setStack(slot, ItemStack.EMPTY);
+            }
+            remaining -= remove;
+        }
+        return remaining < initialRemaining;
+    }
+
+    private boolean addItemsToInventory(ServerWorld world, Inventory inventory, LoggedItemChange change) {
+        ItemStack remaining = buildRollbackItemStack(world, change, inventory);
+        if (remaining.isEmpty()) {
+            return false;
+        }
+        int initialCount = remaining.getCount();
+
+        for (int slot = 0; slot < inventory.size() && !remaining.isEmpty(); slot++) {
+            ItemStack stack = inventory.getStack(slot);
+            if (stack == null || stack.isEmpty()) {
+                continue;
+            }
+            if (!matchesRollbackItem(stack, remaining.copyWithCount(1), change)) {
+                continue;
+            }
+
+            int maxCount = Math.min(stack.getMaxCount(), inventory.getMaxCountPerStack());
+            int space = Math.max(0, maxCount - stack.getCount());
+            if (space <= 0) {
+                continue;
+            }
+
+            int moved = Math.min(space, remaining.getCount());
+            stack.increment(moved);
+            remaining.decrement(moved);
+        }
+
+        for (int slot = 0; slot < inventory.size() && !remaining.isEmpty(); slot++) {
+            ItemStack stack = inventory.getStack(slot);
+            if (stack != null && !stack.isEmpty()) {
+                continue;
+            }
+
+            int moved = Math.min(remaining.getCount(), Math.min(remaining.getMaxCount(), inventory.getMaxCountPerStack()));
+            inventory.setStack(slot, remaining.copyWithCount(moved));
+            remaining.decrement(moved);
+        }
+
+        return remaining.getCount() < initialCount;
+    }
+
+    private boolean removeItemsFromInventory(ServerWorld world, Inventory inventory, LoggedItemChange change) {
+        ItemStack template = buildRollbackItemStack(world, change, inventory).copyWithCount(1);
+        if (template.isEmpty()) {
+            return false;
+        }
+
+        int initialRemaining = change.count();
+        int remaining = initialRemaining;
+        for (int slot = inventory.size() - 1; slot >= 0 && remaining > 0; slot--) {
+            ItemStack stack = inventory.getStack(slot);
+            if (!matchesRollbackItem(stack, template, change)) {
+                continue;
+            }
+
+            int remove = Math.min(remaining, stack.getCount());
+            stack.decrement(remove);
+            if (stack.isEmpty()) {
+                inventory.setStack(slot, ItemStack.EMPTY);
+            }
+            remaining -= remove;
+        }
+
+        return remaining < initialRemaining;
+    }
+
+    private boolean addItemsToLectern(ServerWorld world, BlockPos pos, LecternBlockEntity lecternBlockEntity, LoggedItemChange change) {
+        if (!lecternBlockEntity.getBook().isEmpty()) {
+            return false;
+        }
+        ItemStack targetStack = buildRollbackItemStack(world, change).copyWithCount(change.count());
+        if (targetStack.isEmpty()) {
+            return false;
+        }
+        lecternBlockEntity.setBook(targetStack);
+        lecternBlockEntity.markDirty();
+        BlockState state = world.getBlockState(pos);
+        world.updateListeners(pos, state, state, Block.NOTIFY_ALL);
+        return true;
+    }
+
+    private boolean removeItemsFromLectern(ServerWorld world, BlockPos pos, LecternBlockEntity lecternBlockEntity, LoggedItemChange change) {
+        ItemStack currentStack = lecternBlockEntity.getBook().copy();
+        ItemStack template = buildRollbackItemStack(world, change).copyWithCount(1);
+        if (currentStack.isEmpty() || template.isEmpty() || !matchesRollbackItem(currentStack, template, change)) {
+            return false;
+        }
+        lecternBlockEntity.setBook(ItemStack.EMPTY);
+        lecternBlockEntity.markDirty();
+        BlockState state = world.getBlockState(pos);
+        world.updateListeners(pos, state, state, Block.NOTIFY_ALL);
+        return true;
+    }
+
+    private ItemStack buildRollbackItemStack(ServerWorld world, LoggedItemChange change) {
+        return buildRollbackItemStack(world, change, null);
+    }
+
+    private ItemStack buildRollbackItemStack(ServerWorld world, LoggedItemChange change, Inventory inventory) {
+        ItemStack stack = parseItemStack(world, change.item().serializedStack());
+        if (stack.isEmpty() && hasLegacyMetadata(change)) {
+            stack = findLegacyMetadataTemplate(inventory, change);
+        }
+        if (stack.isEmpty()) {
+            String itemKey = change.item().itemKey();
+            if (itemKey == null || itemKey.isBlank()) {
+                return ItemStack.EMPTY;
+            }
+
+            Identifier identifier = Identifier.tryParse(itemKey.contains(":") ? itemKey : "minecraft:" + itemKey);
+            if (identifier == null || !Registries.ITEM.containsId(identifier)) {
+                return ItemStack.EMPTY;
+            }
+            stack = new ItemStack(Registries.ITEM.get(identifier), 1);
+        }
+        return stack.copyWithCount(change.count());
+    }
+
+    private boolean matchesRollbackItem(ItemStack stack, ItemStack template, LoggedItemChange change) {
+        if (stack == null || stack.isEmpty()) {
+            return false;
+        }
+        if (hasSerializedRollbackItem(change)) {
+            if (template.isEmpty()) {
+                return false;
+            }
+            return ItemStack.areItemsAndComponentsEqual(stack, template);
+        }
+        if (hasLegacyMetadata(change)) {
+            return matchesLegacyRollbackMetadata(stack, change);
+        }
+        return matchesRollbackItemKey(stack, change.item().itemKey());
+    }
+
+    private boolean hasSerializedRollbackItem(LoggedItemChange change) {
+        return change != null
+            && change.item() != null
+            && change.item().serializedStack() != null
+            && !change.item().serializedStack().isBlank();
+    }
+
+    private boolean hasLegacyMetadata(LoggedItemChange change) {
+        return change != null
+            && change.item() != null
+            && !hasSerializedRollbackItem(change)
+            && ((!change.item().componentChanges().isBlank()) || (!change.item().displayName().isBlank()));
+    }
+
+    private ItemStack findLegacyMetadataTemplate(Inventory inventory, LoggedItemChange change) {
+        if (inventory == null) {
+            return ItemStack.EMPTY;
+        }
+
+        for (int slot = 0; slot < inventory.size(); slot++) {
+            ItemStack stack = inventory.getStack(slot);
+            if (matchesLegacyRollbackMetadata(stack, change)) {
+                return stack.copyWithCount(change.count());
+            }
+        }
+        return ItemStack.EMPTY;
+    }
+
+    private boolean matchesLegacyRollbackMetadata(ItemStack stack, LoggedItemChange change) {
+        if (stack == null || stack.isEmpty() || change == null || change.item() == null) {
+            return false;
+        }
+        if (!matchesRollbackItemKey(stack, change.item().itemKey())) {
+            return false;
+        }
+        if (!change.item().displayName().isBlank() && !change.item().displayName().equals(stack.getName().getString())) {
+            return false;
+        }
+        return change.item().componentChanges().isBlank()
+            || change.item().componentChanges().equals(stack.getComponentChanges().toString());
+    }
+
+    private boolean matchesRollbackItemKey(ItemStack stack, String itemKey) {
+        if (stack == null || stack.isEmpty() || itemKey == null || itemKey.isBlank()) {
+            return false;
+        }
+        Identifier identifier = Registries.ITEM.getId(stack.getItem());
+        return identifier != null && itemKey.equalsIgnoreCase(identifier.toString());
+    }
+
+    private void syncPlayerInventory(ServerPlayerEntity player) {
+        player.getInventory().markDirty();
+        player.playerScreenHandler.syncState();
+        player.currentScreenHandler.sendContentUpdates();
+    }
+
+    private OfflinePlayerInventory loadOfflineActorInventory(MinecraftServer server, ServerWorld fallbackWorld, StoredEventRecord event) {
+        PlayerConfigEntry actor = resolveActorConfigEntry(event);
+        if (actor == null || server.isHost(actor)) {
+            return null;
+        }
+
+        Optional<NbtCompound> loaded = server.getPlayerManager().loadPlayerData(actor);
+        if (loaded.isEmpty()) {
+            return null;
+        }
+
+        ServerWorld playerWorld = fallbackWorld != null ? fallbackWorld : server.getOverworld();
+        if (playerWorld == null) {
+            return null;
+        }
+
+        ServerPlayerEntity player = new ServerPlayerEntity(
+            server,
+            playerWorld,
+            new GameProfile(actor.id(), actor.name()),
+            SyncedClientOptions.createDefault()
+        );
+        NbtCompound nbt = loaded.get().copy();
+        NbtReadView readView = (NbtReadView) NbtReadView.create(ErrorReporter.EMPTY, server.getRegistryManager(), nbt);
+        player.getInventory().readData(readView.getTypedListView("Inventory", StackWithSlot.CODEC));
+        player.getInventory().setSelectedSlot(readView.getInt("SelectedItemSlot", 0));
+        return new OfflinePlayerInventory(actor, nbt, player);
+    }
+
+    private boolean saveOfflineActorInventory(MinecraftServer server, OfflinePlayerInventory inventory) {
+        try {
+            NbtWriteView inventoryView = NbtWriteView.create(ErrorReporter.EMPTY, server.getRegistryManager());
+            inventory.player().getInventory().writeData(inventoryView.getListAppender("Inventory", StackWithSlot.CODEC));
+            inventoryView.putInt("SelectedItemSlot", inventory.player().getInventory().getSelectedSlot());
+
+            NbtCompound updatedInventory = inventoryView.getNbt();
+            inventory.nbt().put("Inventory", updatedInventory.get("Inventory"));
+            inventory.nbt().putInt("SelectedItemSlot", updatedInventory.getInt("SelectedItemSlot", 0));
+
+            Path playerDataDir = server.getSavePath(WorldSavePath.PLAYERDATA);
+            Files.createDirectories(playerDataDir);
+            Path tempPath = Files.createTempFile(playerDataDir, inventory.actor().id() + "-", ".dat");
+            NbtIo.writeCompressed(inventory.nbt(), tempPath);
+            Path currentPath = playerDataDir.resolve(inventory.actor().id() + ".dat");
+            Path backupPath = playerDataDir.resolve(inventory.actor().id() + ".dat_old");
+            Util.backupAndReplace(currentPath, tempPath, backupPath);
+            return true;
+        }
+        catch (IOException exception) {
+            logger.warn("Failed to save offline player inventory for {}", inventory.actor().name(), exception);
+            return false;
+        }
+    }
+
+    private PlayerConfigEntry resolveActorConfigEntry(StoredEventRecord event) {
+        if (event.actorUuid() != null && !event.actorUuid().isBlank()) {
+            try {
+                UUID actorUuid = UUID.fromString(event.actorUuid());
+                String actorName = event.actorName() == null || event.actorName().isBlank() ? actorUuid.toString() : event.actorName();
+                return new PlayerConfigEntry(actorUuid, actorName);
+            }
+            catch (IllegalArgumentException ignored) {
+            }
+        }
+        if (event.actorName() != null && !event.actorName().isBlank()) {
+            return PlayerConfigEntry.fromNickname(event.actorName());
+        }
+        return null;
+    }
+
+    private boolean isItemRollbackEvent(CoreProtectEventType eventType) {
+        return eventType == CoreProtectEventType.ITEM_PICKUP
+            || eventType == CoreProtectEventType.ITEM_DROP
+            || eventType == CoreProtectEventType.ITEM_THROW
+            || eventType == CoreProtectEventType.ITEM_SHOOT
+            || eventType == CoreProtectEventType.ITEM_BUY
+            || eventType == CoreProtectEventType.ITEM_SELL
+            || eventType == CoreProtectEventType.ITEM_CREATE
+            || eventType == CoreProtectEventType.ITEM_DESTROY;
+    }
+
+    private record OfflinePlayerInventory(PlayerConfigEntry actor, NbtCompound nbt, ServerPlayerEntity player) {
+    }
+
+    private ContainerTransactionPayload parseContainerTransactionPayload(String payload) {
+        if (payload == null || payload.isBlank()) {
+            return null;
+        }
+
+        Map<String, String> structured = parseKeyValuePayload(payload);
+        if (!structured.containsKey("added") || !structured.containsKey("item")) {
+            return null;
+        }
+
+        LoggedItemChange change = LoggedItemChange.parse(null, payload);
+        if (change.item() == null || change.item().itemKey() == null || change.item().itemKey().isBlank()) {
+            return null;
+        }
+
+        return new ContainerTransactionPayload(
+            structured.get("container"),
+            change,
+            Boolean.parseBoolean(structured.get("added"))
+        );
     }
 
     private String simplifyEntityType(Entity entity) {
@@ -985,9 +1539,9 @@ public final class RollbackService {
         return net.minecraft.registry.Registries.ENTITY_TYPE.get(identifier);
     }
 
-    private ServerWorld resolveWorld(ServerPlayerEntity player, String worldKey) {
-        if (worldKey == null || worldKey.isBlank()) {
-            return (ServerWorld) player.getEntityWorld();
+    private ServerWorld resolveWorld(MinecraftServer server, String worldKey) {
+        if (server == null || worldKey == null || worldKey.isBlank()) {
+            return null;
         }
 
         Identifier identifier = Identifier.tryParse(worldKey);
@@ -995,7 +1549,7 @@ public final class RollbackService {
             return null;
         }
 
-        return ((ServerWorld) player.getEntityWorld()).getServer().getWorld(RegistryKey.of(RegistryKeys.WORLD, identifier));
+        return server.getWorld(RegistryKey.of(RegistryKeys.WORLD, identifier));
     }
 
     private String summarizeActors(List<String> actorFilters) {
@@ -1015,21 +1569,12 @@ public final class RollbackService {
         return (int) Math.max(0L, deltaMillis / 1000L);
     }
 
-    private static final class SignPayload {
-        private final boolean front;
-        private final String[] lines;
-
-        private SignPayload(boolean front, String[] lines) {
-            this.front = front;
-            this.lines = lines;
-        }
-
-        private boolean front() {
-            return front;
-        }
-
-        private String[] lines() {
-            return lines;
-        }
+    private record ContainerTransactionPayload(
+        String containerType,
+        LoggedItemChange change,
+        Boolean added
+    ) {
     }
+
 }
+

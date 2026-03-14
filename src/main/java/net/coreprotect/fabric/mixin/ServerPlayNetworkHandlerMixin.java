@@ -11,7 +11,9 @@ import net.minecraft.block.entity.SignBlockEntity;
 import net.minecraft.network.packet.c2s.play.ButtonClickC2SPacket;
 import net.minecraft.network.packet.c2s.play.ClickSlotC2SPacket;
 import net.minecraft.network.packet.c2s.play.CloseHandledScreenC2SPacket;
+import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
 import net.minecraft.network.packet.c2s.play.UpdateSignC2SPacket;
+import net.minecraft.network.packet.s2c.play.BlockUpdateS2CPacket;
 import net.minecraft.screen.LecternScreenHandler;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.screen.slot.SlotActionType;
@@ -26,13 +28,18 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 
 @Mixin(ServerPlayNetworkHandler.class)
 public abstract class ServerPlayNetworkHandlerMixin {
     @Shadow
     public ServerPlayerEntity player;
+
+    @Shadow
+    public abstract void updateSequence(int sequence);
 
     @Unique
     private BlockPos coreprotect$signPos;
@@ -41,25 +48,48 @@ public abstract class ServerPlayNetworkHandlerMixin {
     @Unique
     private String[] coreprotect$beforeSignLines;
     @Unique
-    private int coreprotect$slotIndex = Integer.MIN_VALUE;
-    @Unique
-    private int coreprotect$slotButton;
-    @Unique
-    private SlotActionType coreprotect$slotActionType;
-    @Unique
-    private ItemStack coreprotect$beforeSlotStack = ItemStack.EMPTY;
-    @Unique
-    private ItemStack coreprotect$beforeCursorStack = ItemStack.EMPTY;
-    @Unique
-    private Map<LoggedItemData, Integer> coreprotect$beforePlayerInventory = Map.of();
+    private List<ItemStack> coreprotect$beforeHandlerSlots = List.of();
     @Unique
     private LecternScreenHandler coreprotect$lecternScreenHandler;
     @Unique
     private int coreprotect$lecternButtonId = Integer.MIN_VALUE;
     @Unique
     private ItemStack coreprotect$beforeLecternBook = ItemStack.EMPTY;
-    @Unique
-    private Map<LoggedItemData, Integer> coreprotect$beforeLecternInventory = Map.of();
+
+    @Inject(
+        method = "onPlayerAction",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/server/network/ServerPlayerInteractionManager;processBlockBreakingAction(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/network/packet/c2s/play/PlayerActionC2SPacket$Action;Lnet/minecraft/util/math/Direction;II)V"
+        ),
+        cancellable = true
+    )
+    private void coreprotect$handleInspectorBlockAction(PlayerActionC2SPacket packet, CallbackInfo ci) {
+        if (!(this.player.getEntityWorld() instanceof ServerWorld serverWorld)) {
+            return;
+        }
+
+        var runtime = CoreProtectFabricMod.getRuntime();
+        if (runtime == null || runtime.inspector() == null || !runtime.inspector().isEnabled(this.player)) {
+            return;
+        }
+
+        PlayerActionC2SPacket.Action action = packet.getAction();
+        if (action != PlayerActionC2SPacket.Action.START_DESTROY_BLOCK
+            && action != PlayerActionC2SPacket.Action.STOP_DESTROY_BLOCK
+            && action != PlayerActionC2SPacket.Action.ABORT_DESTROY_BLOCK) {
+            return;
+        }
+
+        BlockPos pos = packet.getPos();
+        if (action == PlayerActionC2SPacket.Action.START_DESTROY_BLOCK) {
+            runtime.inspector().inspectLeftClickBlock(this.player, serverWorld, pos);
+        }
+
+        this.player.networkHandler.sendPacket(new BlockUpdateS2CPacket(pos, serverWorld.getBlockState(pos)));
+        this.updateSequence(packet.getSequence());
+        ci.cancel();
+    }
 
     @Inject(method = "onUpdateSign", at = @At("HEAD"))
     private void coreprotect$captureSignBefore(UpdateSignC2SPacket packet, CallbackInfo ci) {
@@ -117,18 +147,13 @@ public abstract class ServerPlayNetworkHandlerMixin {
             return;
         }
 
-        coreprotect$slotIndex = packet.slot();
-        coreprotect$slotButton = packet.button();
-        coreprotect$slotActionType = packet.actionType();
-        coreprotect$beforeSlotStack = coreprotect$copySlotStack(handler, coreprotect$slotIndex);
-        coreprotect$beforeCursorStack = handler.getCursorStack().copy();
-        coreprotect$beforePlayerInventory = ItemDeltaSnapshot.snapshotPlayerInventory(this.player);
+        coreprotect$beforeHandlerSlots = coreprotect$copyAllSlotStacks(handler);
     }
 
     @Inject(method = "onClickSlot", at = @At("RETURN"))
     private void coreprotect$logClickSlot(ClickSlotC2SPacket packet, CallbackInfo ci) {
         try {
-            if (coreprotect$slotActionType == null) {
+            if (coreprotect$beforeHandlerSlots.isEmpty()) {
                 return;
             }
 
@@ -141,35 +166,22 @@ public abstract class ServerPlayNetworkHandlerMixin {
             if (context == null) {
                 return;
             }
-
-            ItemStack afterSlotStack = coreprotect$copySlotStack(handler, coreprotect$slotIndex);
-            ItemStack afterCursorStack = handler.getCursorStack().copy();
-            if (ItemStack.areEqual(coreprotect$beforeSlotStack, afterSlotStack) && ItemStack.areEqual(coreprotect$beforeCursorStack, afterCursorStack)) {
+            if (CoreProtectFabricMod.getRuntime() == null || !CoreProtectFabricMod.getRuntime().config(context.worldKey()).itemTransactions()) {
                 return;
             }
 
-            CoreProtectFabricMod.logContainerTransaction(
-                this.player,
-                context.worldKey(),
-                context.pos(),
-                context.containerType(),
-                coreprotect$slotIndex,
-                coreprotect$slotButton,
-                coreprotect$slotActionType,
-                coreprotect$beforeSlotStack,
-                afterSlotStack,
-                coreprotect$beforeCursorStack,
-                afterCursorStack
-            );
-
-            Map<LoggedItemData, Integer> afterPlayerInventory = ItemDeltaSnapshot.snapshotPlayerInventory(this.player);
-            for (ItemDeltaSnapshot.ItemDelta delta : ItemDeltaSnapshot.diff(coreprotect$beforePlayerInventory, afterPlayerInventory)) {
-                if (delta.delta() > 0) {
-                    CoreProtectFabricMod.logItemPickup(this.player, context.worldKey(), context.pos(), delta.item(), delta.delta(), context.containerType());
-                }
-                else {
-                    CoreProtectFabricMod.logItemDrop(this.player, context.worldKey(), context.pos(), delta.item(), -delta.delta(), context.containerType());
-                }
+            Map<LoggedItemData, Integer> beforeContainer = coreprotect$snapshotContainerInventory(coreprotect$beforeHandlerSlots, handler);
+            Map<LoggedItemData, Integer> afterContainer = coreprotect$snapshotContainerInventory(coreprotect$copyAllSlotStacks(handler), handler);
+            for (ItemDeltaSnapshot.ItemDelta delta : ItemDeltaSnapshot.diff(beforeContainer, afterContainer)) {
+                CoreProtectFabricMod.logContainerChange(
+                    this.player,
+                    context.worldKey(),
+                    context.pos(),
+                    context.containerType(),
+                    delta.item(),
+                    Math.abs(delta.delta()),
+                    delta.delta() > 0
+                );
             }
         }
         finally {
@@ -197,7 +209,6 @@ public abstract class ServerPlayNetworkHandlerMixin {
         coreprotect$lecternScreenHandler = lecternScreenHandler;
         coreprotect$lecternButtonId = packet.buttonId();
         coreprotect$beforeLecternBook = lecternScreenHandler.getBookItem().copy();
-        coreprotect$beforeLecternInventory = ItemDeltaSnapshot.snapshotPlayerInventory(this.player);
     }
 
     @Inject(method = "onButtonClick", at = @At("RETURN"))
@@ -211,6 +222,9 @@ public abstract class ServerPlayNetworkHandlerMixin {
             if (context == null) {
                 return;
             }
+            if (CoreProtectFabricMod.getRuntime() == null || !CoreProtectFabricMod.getRuntime().config(context.worldKey()).itemTransactions()) {
+                return;
+            }
 
             ItemStack afterLecternBook = coreprotect$lecternScreenHandler.getBookItem().copy();
             if (ItemStack.areEqual(coreprotect$beforeLecternBook, afterLecternBook)) {
@@ -222,9 +236,7 @@ public abstract class ServerPlayNetworkHandlerMixin {
                 context,
                 coreprotect$lecternButtonId,
                 coreprotect$beforeLecternBook,
-                afterLecternBook,
-                coreprotect$beforeLecternInventory,
-                ItemDeltaSnapshot.snapshotPlayerInventory(this.player)
+                afterLecternBook
             );
         }
         finally {
@@ -256,12 +268,36 @@ public abstract class ServerPlayNetworkHandlerMixin {
 
     @Unique
     private void coreprotect$clearClickState() {
-        coreprotect$slotIndex = Integer.MIN_VALUE;
-        coreprotect$slotButton = 0;
-        coreprotect$slotActionType = null;
-        coreprotect$beforeSlotStack = ItemStack.EMPTY;
-        coreprotect$beforeCursorStack = ItemStack.EMPTY;
-        coreprotect$beforePlayerInventory = Map.of();
+        coreprotect$beforeHandlerSlots = List.of();
+    }
+
+    @Unique
+    private List<ItemStack> coreprotect$copyAllSlotStacks(ScreenHandler handler) {
+        List<ItemStack> snapshot = new ArrayList<>(handler.slots.size());
+        for (int index = 0; index < handler.slots.size(); index++) {
+            snapshot.add(coreprotect$copySlotStack(handler, index));
+        }
+        return snapshot;
+    }
+
+    @Unique
+    private boolean coreprotect$isContainerSlot(ScreenHandler handler, int slotIndex) {
+        if (slotIndex < 0 || slotIndex >= handler.slots.size()) {
+            return false;
+        }
+        return handler.getSlot(slotIndex).inventory != this.player.getInventory();
+    }
+
+    @Unique
+    private Map<LoggedItemData, Integer> coreprotect$snapshotContainerInventory(List<ItemStack> slots, ScreenHandler handler) {
+        List<ItemStack> containerStacks = new ArrayList<>();
+        int slotCount = Math.min(slots.size(), handler.slots.size());
+        for (int index = 0; index < slotCount; index++) {
+            if (coreprotect$isContainerSlot(handler, index)) {
+                containerStacks.add(slots.get(index));
+            }
+        }
+        return ItemDeltaSnapshot.snapshotStacks(containerStacks, ((ServerWorld) this.player.getEntityWorld()).getRegistryManager());
     }
 
     @Unique
@@ -269,6 +305,5 @@ public abstract class ServerPlayNetworkHandlerMixin {
         coreprotect$lecternScreenHandler = null;
         coreprotect$lecternButtonId = Integer.MIN_VALUE;
         coreprotect$beforeLecternBook = ItemStack.EMPTY;
-        coreprotect$beforeLecternInventory = Map.of();
     }
 }

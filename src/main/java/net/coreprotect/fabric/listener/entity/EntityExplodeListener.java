@@ -29,7 +29,7 @@ public final class EntityExplodeListener {
         }
 
         String actor = "#explosion";
-        boolean log = runtime.config().explosions();
+        boolean log = runtime.config(world).explosions();
         if (entity != null) {
             String entityPath = Registries.ENTITY_TYPE.getId(entity.getType()).getPath();
             if ("wind_charge".equals(entityPath) || "breeze_wind_charge".equals(entityPath)) {
@@ -44,13 +44,13 @@ public final class EntityExplodeListener {
             }
             else if (entity instanceof EnderDragonEntity || entity instanceof EnderDragonPart) {
                 actor = "#enderdragon";
-                if (!runtime.config().logEntityChanges()) {
+                if (!runtime.config(world).logEntityChanges()) {
                     log = false;
                 }
             }
             else if (entity instanceof WitherEntity || entity instanceof WitherSkullEntity) {
                 actor = "#wither";
-                if (!runtime.config().logEntityChanges()) {
+                if (!runtime.config(world).logEntityChanges()) {
                     log = false;
                 }
             }

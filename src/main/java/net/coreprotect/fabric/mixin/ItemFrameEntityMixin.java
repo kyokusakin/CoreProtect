@@ -52,14 +52,20 @@ public abstract class ItemFrameEntityMixin {
             return;
         }
 
-        coreprotect$logItemFrameDelta((ServerPlayerEntity) player, (ServerWorld) itemFrameEntity.getEntityWorld(), itemFrameEntity);
+        if (CoreProtectFabricMod.getRuntime() != null && CoreProtectFabricMod.getRuntime().config((ServerWorld) itemFrameEntity.getEntityWorld()).itemTransactions()) {
+            coreprotect$logItemFrameDelta((ServerPlayerEntity) player, (ServerWorld) itemFrameEntity.getEntityWorld(), itemFrameEntity);
+        }
         PlayerInteractEntityListener.logEntityUse((ServerPlayerEntity) player, (ServerWorld) itemFrameEntity.getEntityWorld(), itemFrameEntity.getAttachedBlockPos(), itemFrameEntity);
     }
 
     @Inject(method = "onBreak", at = @At("HEAD"))
     private void coreprotect$logItemFrameBreak(ServerWorld world, Entity breaker, CallbackInfo ci) {
         ItemFrameEntity itemFrameEntity = (ItemFrameEntity) (Object) this;
-        if (breaker instanceof ServerPlayerEntity && !((ServerPlayerEntity) breaker).isCreative() && !itemFrameEntity.getHeldItemStack().isEmpty()) {
+        if (breaker instanceof ServerPlayerEntity
+            && !((ServerPlayerEntity) breaker).isCreative()
+            && !itemFrameEntity.getHeldItemStack().isEmpty()
+            && CoreProtectFabricMod.getRuntime() != null
+            && CoreProtectFabricMod.getRuntime().config(world).itemTransactions()) {
             CoreProtectFabricMod.logItemDrop((ServerPlayerEntity) breaker, world, itemFrameEntity.getAttachedBlockPos(), itemFrameEntity.getHeldItemStack().copy());
         }
         HangingBreakByEntityListener.logHangingBreak(world, itemFrameEntity.getAttachedBlockPos(), itemFrameEntity, breaker);

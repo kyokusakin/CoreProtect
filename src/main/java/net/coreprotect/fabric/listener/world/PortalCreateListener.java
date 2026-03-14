@@ -15,7 +15,7 @@ public final class PortalCreateListener {
 
     public static void logCompletedPortal(PortalCreateContext.CompletedPortal portal) {
         FabricRuntime runtime = CoreProtectFabricMod.getRuntime();
-        if (runtime == null || portal == null || !runtime.config().portals()) {
+        if (runtime == null || portal == null || !runtime.config(portal.world()).portals()) {
             return;
         }
 

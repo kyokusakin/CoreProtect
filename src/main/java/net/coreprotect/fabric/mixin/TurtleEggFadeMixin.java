@@ -1,6 +1,6 @@
 package net.coreprotect.fabric.mixin;
 
-import net.coreprotect.fabric.util.EntityBlockChangeContext;
+import net.coreprotect.fabric.util.NaturalSpreadContext;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.TurtleEggBlock;
 import net.minecraft.server.world.ServerWorld;
@@ -15,11 +15,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class TurtleEggFadeMixin {
     @Inject(method = "randomTick", at = @At("HEAD"))
     private void coreprotect$beginFade(BlockState state, ServerWorld world, BlockPos pos, Random random, CallbackInfo ci) {
-        EntityBlockChangeContext.push("#turtle");
+        NaturalSpreadContext.push("#turtle");
     }
 
     @Inject(method = "randomTick", at = @At("RETURN"))
     private void coreprotect$endFade(BlockState state, ServerWorld world, BlockPos pos, Random random, CallbackInfo ci) {
-        EntityBlockChangeContext.pop();
+        NaturalSpreadContext.pop();
     }
 }

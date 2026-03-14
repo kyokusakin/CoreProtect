@@ -12,7 +12,7 @@ public final class EntityChangeBlockListener {
 
     public static void logEntityBlockChange(String actor, ServerWorld world, BlockPos pos, BlockState previousState, BlockState currentState) {
         FabricRuntime runtime = CoreProtectFabricMod.getRuntime();
-        if (runtime == null || actor == null || actor.isBlank() || previousState == null || currentState == null || previousState.equals(currentState) || !runtime.config().logEntityChanges()) {
+        if (runtime == null || actor == null || actor.isBlank() || previousState == null || currentState == null || previousState.equals(currentState) || !runtime.config(world).logEntityChanges()) {
             return;
         }
 

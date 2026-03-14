@@ -17,12 +17,12 @@ public final class BlockSpreadListener {
         }
 
         if ("#sculk_catalyst".equals(actor)) {
-            if (!runtime.config().sculkSpread()) {
+            if (!runtime.config(world).sculkSpread()) {
                 return;
             }
         }
         else if ("#vine".equals(actor) || "#bamboo".equals(actor) || "#chorus".equals(actor) || "#amethyst".equals(actor)) {
-            if (!runtime.config().vineGrowth()) {
+            if (!runtime.config(world).vineGrowth()) {
                 return;
             }
         }

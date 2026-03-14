@@ -15,7 +15,7 @@ public final class BlockIgniteListener {
 
     public static void logFireIgnite(String actor, ServerWorld world, BlockPos pos, BlockState previousState, BlockState currentState) {
         FabricRuntime runtime = CoreProtectFabricMod.getRuntime();
-        if (runtime == null || actor == null || actor.isBlank() || previousState == null || currentState == null || previousState.equals(currentState) || !runtime.config().blockIgnite()) {
+        if (runtime == null || actor == null || actor.isBlank() || previousState == null || currentState == null || previousState.equals(currentState) || !runtime.config(world).blockIgnite()) {
             return;
         }
 

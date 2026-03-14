@@ -13,15 +13,28 @@ import com.sk89q.worldedit.math.BlockVector3;
 import com.sk89q.worldedit.world.block.BaseBlock;
 import com.sk89q.worldedit.world.block.BlockStateHolder;
 import net.coreprotect.fabric.log.FabricEventLogger;
+import net.coreprotect.fabric.util.BlockStateSerializer;
+import net.coreprotect.fabric.util.LoggedSignState;
 import net.minecraft.block.AbstractSignBlock;
+import net.minecraft.block.ChiseledBookshelfBlock;
+import net.minecraft.block.DecoratedPotBlock;
+import net.minecraft.block.JukeboxBlock;
+import net.minecraft.block.LecternBlock;
 import net.minecraft.block.BlockState;
+import net.minecraft.inventory.StackWithSlot;
+import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.nbt.NbtElement;
 import net.minecraft.nbt.NbtList;
+import net.minecraft.nbt.NbtOps;
+import net.minecraft.registry.RegistryOps;
+import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.DyeColor;
 import net.minecraft.util.math.BlockPos;
 
-import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 
 public final class WorldEditExtentLogger extends AbstractDelegateExtent {
@@ -40,11 +53,6 @@ public final class WorldEditExtentLogger extends AbstractDelegateExtent {
     public <T extends BlockStateHolder<T>> boolean setBlock(BlockVector3 position, T block) throws WorldEditException {
         BaseBlock oldFullBlock = getExtent().getFullBlock(position);
         com.sk89q.worldedit.world.block.BlockState oldState = oldFullBlock.toImmutableState();
-        com.sk89q.worldedit.world.block.BlockState requestedState = block.toImmutableState();
-        boolean signRelated = isSignState(oldState) || isSignState(requestedState);
-        if (!signRelated && oldState.equalsFuzzy(requestedState)) {
-            return super.setBlock(position, block);
-        }
 
         boolean changed = super.setBlock(position, block);
         if (!changed) {
@@ -56,6 +64,7 @@ public final class WorldEditExtentLogger extends AbstractDelegateExtent {
         if (!oldState.equalsFuzzy(newState)) {
             logBlockChange(position, oldState, newState);
         }
+        logContainerChanges(position, oldFullBlock, newFullBlock);
         logSignChanges(position, oldFullBlock, newFullBlock);
         return true;
     }
@@ -85,15 +94,68 @@ public final class WorldEditExtentLogger extends AbstractDelegateExtent {
     }
 
     private void logSignSide(BlockVector3 position, BaseBlock oldBlock, BaseBlock newBlock, boolean front) {
-        String[] beforeLines = readSignLines(oldBlock, front);
-        String[] afterLines = readSignLines(newBlock, front);
-        if (Arrays.equals(beforeLines, afterLines)) {
+        LoggedSignState beforeState = readSignState(oldBlock, front);
+        LoggedSignState afterState = readSignState(newBlock, front);
+        if (beforeState.equals(afterState)) {
             return;
         }
 
         UUID actorUuid = actor.getUniqueId();
         String actorName = actor.getName();
-        eventLogger.logSignChange(actorUuid, actorName, world, FabricAdapter.toBlockPos(position), front, afterLines);
+        eventLogger.logSignChange(actorUuid, actorName, world, FabricAdapter.toBlockPos(position), afterState);
+    }
+
+    private void logContainerChanges(BlockVector3 position, BaseBlock oldBlock, BaseBlock newBlock) {
+        BlockState oldNative = FabricAdapter.adapt(oldBlock.toImmutableState());
+        BlockState newNative = FabricAdapter.adapt(newBlock.toImmutableState());
+        BlockPos blockPos = FabricAdapter.toBlockPos(position);
+        String worldKey = world.getRegistryKey().getValue().toString();
+        String containerType = BlockStateSerializer.describeBlock(!newNative.isAir() ? newNative : oldNative);
+        UUID actorUuid = actor.getUniqueId();
+        String actorName = actor.getName();
+
+        if (oldNative.getBlock() instanceof LecternBlock || newNative.getBlock() instanceof LecternBlock) {
+            logContainerSlotChange(actorUuid == null ? null : actorUuid.toString(), actorName, worldKey, blockPos, containerType, 0, readNamedStack(toNbt(oldBlock), "Book"), readNamedStack(toNbt(newBlock), "Book"));
+            return;
+        }
+        if (oldNative.getBlock() instanceof JukeboxBlock || newNative.getBlock() instanceof JukeboxBlock) {
+            logContainerSlotChange(actorUuid == null ? null : actorUuid.toString(), actorName, worldKey, blockPos, containerType, 0, readNamedStack(toNbt(oldBlock), "RecordItem"), readNamedStack(toNbt(newBlock), "RecordItem"));
+            return;
+        }
+        if (oldNative.getBlock() instanceof DecoratedPotBlock || newNative.getBlock() instanceof DecoratedPotBlock) {
+            logContainerSlotChange(actorUuid == null ? null : actorUuid.toString(), actorName, worldKey, blockPos, containerType, 0, readNamedStack(toNbt(oldBlock), "item"), readNamedStack(toNbt(newBlock), "item"));
+            return;
+        }
+        if (oldNative.getBlock() instanceof ChiseledBookshelfBlock || newNative.getBlock() instanceof ChiseledBookshelfBlock) {
+            Map<Integer, ItemStack> before = readStackMap(toNbt(oldBlock), "Items");
+            Map<Integer, ItemStack> after = readStackMap(toNbt(newBlock), "Items");
+            for (int slot = 0; slot < 6; slot++) {
+                logContainerSlotChange(actorUuid == null ? null : actorUuid.toString(), actorName, worldKey, blockPos, containerType, slot, before.getOrDefault(slot, ItemStack.EMPTY), after.getOrDefault(slot, ItemStack.EMPTY));
+            }
+        }
+    }
+
+    private void logContainerSlotChange(String actorUuid, String actorName, String worldKey, BlockPos pos, String containerType, int slotIndex, ItemStack before, ItemStack after) {
+        ItemStack beforeStack = before == null ? ItemStack.EMPTY : before;
+        ItemStack afterStack = after == null ? ItemStack.EMPTY : after;
+        if (ItemStack.areEqual(beforeStack, afterStack)) {
+            return;
+        }
+
+        eventLogger.logContainerTransaction(
+            actorUuid,
+            actorName,
+            worldKey,
+            pos,
+            containerType,
+            slotIndex,
+            0,
+            SlotActionType.PICKUP,
+            beforeStack,
+            afterStack,
+            ItemStack.EMPTY,
+            ItemStack.EMPTY
+        );
     }
 
     private boolean isSignState(com.sk89q.worldedit.world.block.BlockState state) {
@@ -101,12 +163,17 @@ public final class WorldEditExtentLogger extends AbstractDelegateExtent {
         return nativeState.getBlock() instanceof AbstractSignBlock;
     }
 
-    private String[] readSignLines(BaseBlock block, boolean front) {
+    private LoggedSignState readSignState(BaseBlock block, boolean front) {
         String[] lines = new String[] { "", "", "", "" };
+        DyeColor color = DyeColor.BLACK;
+        boolean glowing = false;
+        boolean waxed = false;
         NbtCompound nbt = toNbt(block);
         if (nbt == null) {
-            return lines;
+            return LoggedSignState.blank(front);
         }
+
+        waxed = nbt.getBoolean("is_waxed", false);
 
         String sideKey = front ? "front_text" : "back_text";
         if (nbt.contains(sideKey)) {
@@ -115,17 +182,19 @@ public final class WorldEditExtentLogger extends AbstractDelegateExtent {
             for (int index = 0; index < lines.length; index++) {
                 lines[index] = decodeSignComponent(messages.getString(index, ""));
             }
-            return lines;
+            color = DyeColor.byId(side.getString("color", DyeColor.BLACK.asString()), DyeColor.BLACK);
+            glowing = side.getBoolean("has_glowing_text", false);
+            return LoggedSignState.of(front, color, glowing, waxed, lines);
         }
 
         if (!front) {
-            return lines;
+            return LoggedSignState.of(front, color, glowing, waxed, lines);
         }
 
         for (int index = 0; index < lines.length; index++) {
             lines[index] = decodeSignComponent(nbt.getString("Text" + (index + 1), ""));
         }
-        return lines;
+        return LoggedSignState.of(front, color, glowing, waxed, lines);
     }
 
     private NbtCompound toNbt(BaseBlock block) {
@@ -135,6 +204,38 @@ public final class WorldEditExtentLogger extends AbstractDelegateExtent {
 
         NbtElement element = NBTConverter.toNative(block.getNbtReference().getValue());
         return element instanceof NbtCompound ? (NbtCompound) element : null;
+    }
+
+    private ItemStack readNamedStack(NbtCompound nbt, String key) {
+        if (nbt == null || key == null || key.isBlank() || !nbt.contains(key)) {
+            return ItemStack.EMPTY;
+        }
+        return parseItemStack(nbt.get(key));
+    }
+
+    private Map<Integer, ItemStack> readStackMap(NbtCompound nbt, String key) {
+        Map<Integer, ItemStack> stacks = new HashMap<>();
+        if (nbt == null || key == null || key.isBlank()) {
+            return stacks;
+        }
+
+        NbtList list = nbt.getListOrEmpty(key);
+        for (int index = 0; index < list.size(); index++) {
+            NbtElement element = list.get(index);
+            StackWithSlot stackWithSlot = StackWithSlot.CODEC.parse(RegistryOps.of(NbtOps.INSTANCE, world.getRegistryManager()), element).result().orElse(null);
+            if (stackWithSlot == null || !stackWithSlot.isValidSlot(64)) {
+                continue;
+            }
+            stacks.put(stackWithSlot.slot(), stackWithSlot.stack());
+        }
+        return stacks;
+    }
+
+    private ItemStack parseItemStack(NbtElement element) {
+        if (element == null) {
+            return ItemStack.EMPTY;
+        }
+        return ItemStack.CODEC.parse(RegistryOps.of(NbtOps.INSTANCE, world.getRegistryManager()), element).result().orElse(ItemStack.EMPTY);
     }
 
     private String decodeSignComponent(String raw) {

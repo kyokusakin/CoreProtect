@@ -13,7 +13,7 @@ public final class FoodLevelChangeListener {
 
     public static void logCakeEat(ServerPlayerEntity player, ServerWorld world, BlockPos pos, BlockState previousState, BlockState currentState) {
         FabricRuntime runtime = CoreProtectFabricMod.getRuntime();
-        if (runtime == null || player == null || previousState == null || currentState == null || previousState.equals(currentState) || !runtime.config().logBlockBreaks()) {
+        if (runtime == null || player == null || previousState == null || currentState == null || previousState.equals(currentState) || !runtime.config(world).logBlockBreaks()) {
             return;
         }
 

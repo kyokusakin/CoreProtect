@@ -14,7 +14,7 @@ public final class PlayerDeathListener {
 
     public static void logDeathDrops(ServerPlayerEntity player, Map<LoggedItemData, Integer> beforeInventory, Map<LoggedItemData, Integer> afterInventory) {
         FabricRuntime runtime = CoreProtectFabricMod.getRuntime();
-        if (runtime == null || player == null || !runtime.config().logItemDrops()) {
+        if (runtime == null || player == null || !runtime.config((net.minecraft.server.world.ServerWorld) player.getEntityWorld()).logItemDrops()) {
             return;
         }
 

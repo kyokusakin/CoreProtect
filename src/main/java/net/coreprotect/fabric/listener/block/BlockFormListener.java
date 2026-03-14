@@ -19,7 +19,7 @@ public final class BlockFormListener {
 
     public static void logLiquidForm(ServerWorld world, BlockPos pos, BlockState previousState, BlockState newState) {
         FabricRuntime runtime = CoreProtectFabricMod.getRuntime();
-        if (runtime == null || previousState == null || newState == null || previousState.equals(newState) || !runtime.config().liquidTracking()) {
+        if (runtime == null || previousState == null || newState == null || previousState.equals(newState) || !runtime.config(world).liquidTracking()) {
             return;
         }
 

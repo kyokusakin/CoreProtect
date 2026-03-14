@@ -2,8 +2,8 @@ package net.coreprotect.fabric.command;
 
 import net.coreprotect.fabric.CoreProtectFabricMod;
 import net.coreprotect.fabric.listener.channel.PluginChannelListener;
+import net.coreprotect.language.Phrase;
 import net.minecraft.server.command.ServerCommandSource;
-import net.minecraft.text.Text;
 
 public final class NetworkDebugCommand {
     private NetworkDebugCommand() {
@@ -11,7 +11,7 @@ public final class NetworkDebugCommand {
 
     protected static int runCommand(ServerCommandSource source, boolean permission, String[] args) {
         if (!permission || CoreProtectFabricMod.getRuntime() == null || !CoreProtectFabricMod.getRuntime().config().networkDebug()) {
-            source.sendFeedback(() -> Text.literal("CoreProtect - You do not have permission to do that."), false);
+            source.sendFeedback(() -> CoreProtectText.prefixed(Phrase.build(Phrase.NO_PERMISSION)), false);
             return 0;
         }
 
@@ -21,7 +21,6 @@ public final class NetworkDebugCommand {
         }
         catch (Exception exception) {
             CoreProtectFabricMod.LOGGER.error("CoreProtect networking debug command failed", exception);
-            source.sendFeedback(() -> Text.literal("CoreProtect - Failed to send network test packet."), false);
             return 0;
         }
     }

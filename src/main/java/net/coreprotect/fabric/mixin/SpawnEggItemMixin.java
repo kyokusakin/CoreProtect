@@ -3,7 +3,8 @@ package net.coreprotect.fabric.mixin;
 import net.coreprotect.fabric.CoreProtectFabricMod;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
-import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.mob.MobEntity;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.ItemUsageContext;
 import net.minecraft.item.SpawnEggItem;
@@ -68,22 +69,22 @@ public abstract class SpawnEggItemMixin {
 
     @Inject(method = "spawnBaby", at = @At("RETURN"))
     private static void coreprotect$logSpawnEggBaby(
-        ServerPlayerEntity user,
-        LivingEntity entity,
-        EntityType<?> entityType,
+        PlayerEntity user,
+        MobEntity entity,
+        EntityType<? extends MobEntity> entityType,
         ServerWorld world,
         Vec3d pos,
         ItemStack stack,
         CallbackInfoReturnable<Optional<Entity>> cir
     ) {
-        if (user == null || world == null) {
+        if (!(user instanceof ServerPlayerEntity serverPlayer) || world == null) {
             return;
         }
         Optional<Entity> spawnedEntity = cir.getReturnValue();
         if (spawnedEntity == null || spawnedEntity.isEmpty()) {
             return;
         }
-        CoreProtectFabricMod.logEntityPlace(user, world, spawnedEntity.get().getBlockPos(), spawnedEntity.get());
+        CoreProtectFabricMod.logEntityPlace(serverPlayer, world, spawnedEntity.get().getBlockPos(), spawnedEntity.get());
     }
 
     @Unique

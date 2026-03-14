@@ -1,6 +1,7 @@
 package net.coreprotect.fabric.mixin;
 
 import net.coreprotect.fabric.CoreProtectFabricMod;
+import net.coreprotect.fabric.hook.BucketItemHooks;
 import net.minecraft.entity.Entity;
 import net.minecraft.item.EntityBucketItem;
 import net.minecraft.item.ItemStack;
@@ -17,7 +18,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class EntityBucketItemMixin {
     @Inject(method = "spawnEntity", at = @At("RETURN"))
     private void coreprotect$logBucketedEntityPlacement(ServerWorld world, ItemStack stack, BlockPos pos, CallbackInfo ci) {
-        BucketItemMixin.EntityBucketContext context = BucketItemMixin.coreprotect$consumeEntityBucketContext();
+        BucketItemHooks.EntityBucketContext context = BucketItemHooks.consumeEntityContext();
         if (context == null) {
             return;
         }

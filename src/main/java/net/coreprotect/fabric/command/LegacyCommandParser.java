@@ -26,6 +26,10 @@ public final class LegacyCommandParser {
         Integer minimumSeconds = null;
         Integer seconds = null;
         Integer radius = null;
+        Integer radiusX = null;
+        Integer radiusY = null;
+        Integer radiusZ = null;
+        String coordinates = null;
         String worldFilter = null;
         boolean globalScope = false;
         Integer limit = null;
@@ -34,6 +38,7 @@ public final class LegacyCommandParser {
         Set<String> includeTargets = new LinkedHashSet<>();
         Set<String> rawExcludes = new LinkedHashSet<>();
         boolean preview = false;
+        boolean previewCancel = false;
         boolean count = false;
         boolean silent = false;
         boolean verbose = false;
@@ -53,6 +58,11 @@ public final class LegacyCommandParser {
             }
             if (isPreviewFlag(token)) {
                 preview = true;
+                mode = Mode.NONE;
+                continue;
+            }
+            if (isPreviewCancelFlag(token)) {
+                previewCancel = true;
                 mode = Mode.NONE;
                 continue;
             }
@@ -86,9 +96,12 @@ public final class LegacyCommandParser {
                     mode = token.endsWith(",") ? Mode.TIME : Mode.NONE;
                 }
                 case RADIUS -> {
-                    Integer parsedRadius = parseInteger(token);
+                    RadiusSpec parsedRadius = parseRadius(token);
                     if (parsedRadius != null) {
-                        radius = parsedRadius;
+                        radius = parsedRadius.maxRadius();
+                        radiusX = parsedRadius.xRadius();
+                        radiusY = parsedRadius.yRadius();
+                        radiusZ = parsedRadius.zRadius();
                         worldFilter = null;
                         globalScope = false;
                     }
@@ -101,6 +114,13 @@ public final class LegacyCommandParser {
                         }
                     }
                     mode = token.endsWith(",") ? Mode.RADIUS : Mode.NONE;
+                }
+                case COORDINATE -> {
+                    String parsedCoordinates = parseCoordinates(token);
+                    if (parsedCoordinates != null) {
+                        coordinates = parsedCoordinates;
+                    }
+                    mode = token.endsWith(",") ? Mode.COORDINATE : Mode.NONE;
                 }
                 case LIMIT -> {
                     Integer parsedLimit = parseInteger(token);
@@ -131,6 +151,10 @@ public final class LegacyCommandParser {
             minimumSeconds,
             seconds,
             radius,
+            radiusX,
+            radiusY,
+            radiusZ,
+            coordinates,
             worldFilter,
             globalScope,
             limit,
@@ -140,6 +164,7 @@ public final class LegacyCommandParser {
             includeTargets.isEmpty() ? null : new ArrayList<>(includeTargets),
             excludeTargets.isEmpty() ? null : excludeTargets,
             preview,
+            previewCancel,
             count,
             silent,
             verbose
@@ -147,7 +172,7 @@ public final class LegacyCommandParser {
     }
 
     private static LegacyCommandOptions emptyOptions() {
-        return new LegacyCommandOptions(null, null, null, null, false, null, null, null, null, null, null, false, false, false, false);
+        return new LegacyCommandOptions(null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, false, false, false, false, false);
     }
 
     private static boolean appendCsvValues(Set<String> target, String token) {
@@ -255,6 +280,9 @@ public final class LegacyCommandParser {
         if (startsWithAny(token, "r:", "radius:", "w:", "world:")) {
             return new PrefixToken(Mode.RADIUS, stripPrefix(token, "r:", "radius:", "w:", "world:"));
         }
+        if (startsWithAny(token, "c:", "coord:", "coords:", "coordinate:", "coordinates:", "cord:", "cords:", "cordinate:", "cordinates:", "position:", "location:")) {
+            return new PrefixToken(Mode.COORDINATE, stripPrefix(token, "c:", "coord:", "coords:", "coordinate:", "coordinates:", "cord:", "cords:", "cordinate:", "cordinates:", "position:", "location:"));
+        }
         if (startsWithAny(token, "rows:", "row:", "limit:", "l:")) {
             return new PrefixToken(Mode.LIMIT, stripPrefix(token, "rows:", "row:", "limit:", "l:"));
         }
@@ -301,6 +329,14 @@ public final class LegacyCommandParser {
     private static boolean isPreviewFlag(String token) {
         String cleaned = token.toLowerCase(Locale.ROOT);
         return "#preview".equals(cleaned) || "preview".equals(cleaned);
+    }
+
+    private static boolean isPreviewCancelFlag(String token) {
+        String cleaned = token.toLowerCase(Locale.ROOT);
+        return "#preview_cancel".equals(cleaned)
+            || "#preview-cancel".equals(cleaned)
+            || "preview_cancel".equals(cleaned)
+            || "preview-cancel".equals(cleaned);
     }
 
     private static boolean isSilentFlag(String token) {
@@ -369,6 +405,70 @@ public final class LegacyCommandParser {
         catch (NumberFormatException exception) {
             return null;
         }
+    }
+
+    private static RadiusSpec parseRadius(String input) {
+        String cleaned = stripTrailingComma(input);
+        if (cleaned.isBlank()) {
+            return null;
+        }
+
+        String[] parts = cleaned.split("x", -1);
+        if (parts.length == 1) {
+            Integer value = parseInteger(cleaned);
+            return value == null ? null : new RadiusSpec(value, null, value, value);
+        }
+        if (parts.length < 2 || parts.length > 3) {
+            return null;
+        }
+
+        Integer xRadius = parseInteger(parts[0]);
+        Integer second = parseInteger(parts[1]);
+        if (xRadius == null || second == null) {
+            return null;
+        }
+
+        Integer yRadius = null;
+        Integer zRadius = second;
+        if (parts.length == 3) {
+            yRadius = second;
+            zRadius = parseInteger(parts[2]);
+            if (zRadius == null) {
+                return null;
+            }
+        }
+
+        int maxRadius = Math.max(xRadius, Math.max(yRadius == null ? 0 : yRadius, zRadius));
+        return new RadiusSpec(maxRadius, yRadius, xRadius, zRadius);
+    }
+
+    private static String parseCoordinates(String input) {
+        String cleaned = stripTrailingComma(input);
+        if (cleaned.isBlank()) {
+            return null;
+        }
+
+        String[] parts = cleaned.split(",", -1);
+        if (parts.length < 2 || parts.length > 3) {
+            return null;
+        }
+
+        List<String> numeric = new ArrayList<>();
+        for (String part : parts) {
+            String value = part.replaceAll("[^0-9.\\-]", "").trim();
+            if (value.isBlank() || ".".equals(value) || "-".equals(value) || value.indexOf('.') != value.lastIndexOf('.')) {
+                return null;
+            }
+            try {
+                Double.parseDouble(value);
+            }
+            catch (NumberFormatException exception) {
+                return null;
+            }
+            numeric.add(value);
+        }
+
+        return String.join(",", numeric);
     }
 
     private static Integer parseDuration(String input) {
@@ -666,6 +766,7 @@ public final class LegacyCommandParser {
         NONE,
         TIME,
         RADIUS,
+        COORDINATE,
         LIMIT,
         USER,
         ACTION,
@@ -692,5 +793,8 @@ public final class LegacyCommandParser {
         private int maximumSeconds() {
             return maximumSeconds;
         }
+    }
+
+    private record RadiusSpec(int maxRadius, Integer yRadius, int xRadius, int zRadius) {
     }
 }

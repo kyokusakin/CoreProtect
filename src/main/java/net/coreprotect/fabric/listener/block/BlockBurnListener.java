@@ -13,7 +13,7 @@ public final class BlockBurnListener {
 
     public static void logBlockBurn(String actor, ServerWorld world, BlockPos pos, BlockState previousState) {
         FabricRuntime runtime = CoreProtectFabricMod.getRuntime();
-        if (runtime == null || actor == null || actor.isBlank() || previousState == null || previousState.isAir() || !runtime.config().blockBurn()) {
+        if (runtime == null || actor == null || actor.isBlank() || previousState == null || previousState.isAir() || !runtime.config(world).blockBurn()) {
             return;
         }
 

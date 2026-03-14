@@ -16,7 +16,7 @@ public final class BlockPistonListener {
 
     public static void logPistonMove(ServerWorld world, Direction motionDirection, List<BlockPos> movedBlocks, Map<BlockPos, BlockState> sourceStates, List<BlockPos> brokenBlocks, Map<BlockPos, BlockState> brokenStates) {
         FabricRuntime runtime = CoreProtectFabricMod.getRuntime();
-        if (runtime == null || !runtime.config().pistons()) {
+        if (runtime == null || !runtime.config(world).pistons()) {
             return;
         }
 

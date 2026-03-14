@@ -25,8 +25,8 @@ public final class BlockFromToListener {
         boolean isWater = fluid.matchesType(Fluids.WATER);
         boolean isLava = fluid.matchesType(Fluids.LAVA);
         if ((!isWater && !isLava)
-            || (isWater && !runtime.config().waterFlow())
-            || (isLava && !runtime.config().lavaFlow())) {
+            || (isWater && !runtime.config(world).waterFlow())
+            || (isLava && !runtime.config(world).lavaFlow())) {
             return;
         }
 
@@ -42,7 +42,7 @@ public final class BlockFromToListener {
         }
 
         String actor = isWater ? "#water" : "#lava";
-        if (runtime.config().liquidTracking()) {
+        if (runtime.config(world).liquidTracking()) {
             String trackedActor = TransientLookupCache.findPlacedActor(worldKey, sourcePos);
             if (trackedActor != null && !trackedActor.isBlank()) {
                 actor = trackedActor;
@@ -69,10 +69,10 @@ public final class BlockFromToListener {
             actor = "#entity";
         }
 
-        if (runtime.config().logBlockBreaks()) {
+        if (runtime.config(world).logBlockBreaks()) {
             runtime.logger().logBlockBreak(null, actor, world, sourcePos, originalState);
         }
-        if (runtime.config().logBlockPlaces()) {
+        if (runtime.config(world).logBlockPlaces()) {
             BlockState placedState = world.getBlockState(targetPos);
             runtime.logger().logBlockPlace(null, actor, world, targetPos, placedState);
             TransientLookupCache.rememberPlacedActor(worldKey, targetPos, actor, BlockStateSerializer.describeBlock(placedState));

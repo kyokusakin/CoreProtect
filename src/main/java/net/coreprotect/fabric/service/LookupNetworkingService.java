@@ -5,6 +5,8 @@ import net.coreprotect.fabric.db.StoredEventRecord;
 import net.coreprotect.fabric.listener.channel.PluginChannelListener;
 import net.coreprotect.fabric.log.CoreProtectEventType;
 import net.coreprotect.fabric.util.LoggedItemChange;
+import net.coreprotect.language.Phrase;
+import net.coreprotect.language.Selector;
 import net.minecraft.server.command.ServerCommandSource;
 
 import java.io.IOException;
@@ -39,10 +41,10 @@ public final class LookupNetworkingService {
                         listener.sendMessageData(source, timeAgo, actor, extractSignMessagePayload(event), true, x, y, z, worldName);
                         break;
                     case PLAYER_JOIN:
-                        listener.sendInfoData(source, timeAgo, "lookup.login.1", actor, -1, x, y, z, worldName);
+                        listener.sendInfoData(source, timeAgo, selectorWord(Phrase.LOOKUP_LOGIN, Selector.FIRST, "in"), actor, -1, x, y, z, worldName);
                         break;
                     case PLAYER_QUIT:
-                        listener.sendInfoData(source, timeAgo, "lookup.login.2", actor, -1, x, y, z, worldName);
+                        listener.sendInfoData(source, timeAgo, selectorWord(Phrase.LOOKUP_LOGIN, Selector.SECOND, "out"), actor, -1, x, y, z, worldName);
                         break;
                     case USERNAME_CHANGE:
                         listener.sendUsernameData(source, timeAgo, actor, extractUsernamePayload(event));
@@ -85,85 +87,62 @@ public final class LookupNetworkingService {
         }
 
         return switch (event.type()) {
-            case BLOCK_PLACE, ENTITY_PLACE -> new LookupNetworkPayload("lookup.block.1", simplifyIdentifier(event.target()), -1, false, true);
-            case BLOCK_BREAK, ENTITY_BREAK -> new LookupNetworkPayload("lookup.block.2", simplifyIdentifier(event.target()), -1, false, false);
-            case BLOCK_USE, ENTITY_USE -> new LookupNetworkPayload("lookup.interaction.1", simplifyIdentifier(event.target()), -1, false, false);
-            case ENTITY_KILL -> new LookupNetworkPayload("lookup.interaction.2", simplifyIdentifier(event.target()), -1, false, false);
+            case BLOCK_PLACE, ENTITY_PLACE -> new LookupNetworkPayload(selectorWord(Phrase.LOOKUP_BLOCK, Selector.FIRST, "placed"), simplifyIdentifier(event.target()), -1, false, true);
+            case BLOCK_BREAK, ENTITY_BREAK -> new LookupNetworkPayload(selectorWord(Phrase.LOOKUP_BLOCK, Selector.SECOND, "broke"), simplifyIdentifier(event.target()), -1, false, false);
+            case BLOCK_USE, ENTITY_USE -> new LookupNetworkPayload(selectorWord(Phrase.LOOKUP_INTERACTION, Selector.FIRST, "clicked"), simplifyIdentifier(event.target()), -1, false, false);
+            case ENTITY_KILL -> new LookupNetworkPayload(selectorWord(Phrase.LOOKUP_INTERACTION, Selector.SECOND, "killed"), simplifyIdentifier(event.target()), -1, false, false);
             case CONTAINER_TRANSACTION -> parseContainerPayload(event);
-            case ITEM_PICKUP, ITEM_BUY, ITEM_CREATE -> new LookupNetworkPayload("lookup.item.1", itemTarget, itemChange.count(), false, true);
-            case ITEM_DROP, ITEM_SELL, ITEM_DESTROY -> new LookupNetworkPayload("lookup.item.2", itemTarget, itemChange.count(), false, false);
-            case ITEM_THROW -> new LookupNetworkPayload("lookup.projectile.1", itemTarget, itemChange.count(), false, false);
-            case ITEM_SHOOT -> new LookupNetworkPayload("lookup.projectile.2", itemTarget, itemChange.count(), false, false);
+            case ITEM_PICKUP, ITEM_BUY, ITEM_CREATE -> new LookupNetworkPayload(selectorWord(Phrase.LOOKUP_ITEM, Selector.FIRST, "picked up"), itemTarget, itemChange.count(), false, true);
+            case ITEM_DROP, ITEM_SELL, ITEM_DESTROY -> new LookupNetworkPayload(selectorWord(Phrase.LOOKUP_ITEM, Selector.SECOND, "dropped"), itemTarget, itemChange.count(), false, false);
+            case ITEM_THROW -> new LookupNetworkPayload(selectorWord(Phrase.LOOKUP_PROJECTILE, Selector.FIRST, "threw"), itemTarget, itemChange.count(), false, false);
+            case ITEM_SHOOT -> new LookupNetworkPayload(selectorWord(Phrase.LOOKUP_PROJECTILE, Selector.SECOND, "shot"), itemTarget, itemChange.count(), false, false);
             default -> null;
         };
     }
 
     private static LookupNetworkPayload parseContainerPayload(StoredEventRecord event) {
-        if (event.payload() == null || event.payload().isBlank()) {
-            return new LookupNetworkPayload("lookup.container.1", simplifyIdentifier(event.target()), 1, true, true);
+        LookupNetworkPayload structuredPayload = parseStructuredContainerPayload(event.payload());
+        if (structuredPayload != null) {
+            return structuredPayload;
         }
 
-        String[] lines = event.payload().split("\\R", -1);
-        if (lines.length < 8) {
-            return new LookupNetworkPayload("lookup.container.1", simplifyIdentifier(event.target()), 1, true, true);
-        }
-
-        LoggedItemChange before = LoggedItemChange.parse(lines[4], null);
-        LoggedItemChange after = LoggedItemChange.parse(lines[5], null);
-        boolean beforeEmpty = isEmptyStack(lines[4], before);
-        boolean afterEmpty = isEmptyStack(lines[5], after);
-
-        String target;
-        int amount;
-        boolean added;
-        if (beforeEmpty && !afterEmpty) {
-            target = after.lookupTarget();
-            amount = after.count();
-            added = true;
-        }
-        else if (!beforeEmpty && afterEmpty) {
-            target = before.lookupTarget();
-            amount = before.count();
-            added = false;
-        }
-        else if (!beforeEmpty && !afterEmpty && before.item().itemKey().equals(after.item().itemKey())) {
-            int delta = after.count() - before.count();
-            if (delta == 0) {
-                target = after.lookupTarget();
-                amount = Math.max(1, after.count());
-                added = true;
-            }
-            else {
-                target = after.lookupTarget();
-                amount = Math.abs(delta);
-                added = delta > 0;
-            }
-        }
-        else if (!afterEmpty) {
-            target = after.lookupTarget();
-            amount = after.count();
-            added = true;
-        }
-        else if (!beforeEmpty) {
-            target = before.lookupTarget();
-            amount = before.count();
-            added = false;
-        }
-        else {
-            target = simplifyIdentifier(event.target());
-            amount = 1;
-            added = true;
-        }
-
-        return new LookupNetworkPayload(added ? "lookup.container.1" : "lookup.container.2", simplifyIdentifier(target), Math.max(1, amount), true, added);
+        return new LookupNetworkPayload(
+                selectorWord(Phrase.LOOKUP_CONTAINER, Selector.FIRST, "added"),
+                simplifyIdentifier(event.target()),
+                1,
+            true,
+                true
+        );
     }
 
-    private static boolean isEmptyStack(String serializedStack, LoggedItemChange change) {
-        return serializedStack == null
-            || serializedStack.isBlank()
-            || "empty".equalsIgnoreCase(serializedStack.trim())
-            || change.item().itemKey() == null
-            || change.item().itemKey().isBlank();
+    private static LookupNetworkPayload parseStructuredContainerPayload(String payload) {
+        if (payload == null || payload.isBlank()) {
+            return null;
+        }
+
+        Boolean added = null;
+        for (String line : payload.split("\\R", -1)) {
+            if (line.startsWith("added=")) {
+                added = Boolean.parseBoolean(line.substring("added=".length()).trim());
+                break;
+            }
+        }
+        if (added == null) {
+            return null;
+        }
+
+        LoggedItemChange change = LoggedItemChange.parse(null, payload);
+        if (change == null || change.item() == null || change.item().itemKey() == null || change.item().itemKey().isBlank()) {
+            return null;
+        }
+
+        return new LookupNetworkPayload(
+            selectorWord(Phrase.LOOKUP_CONTAINER, added ? Selector.FIRST : Selector.SECOND, added ? "added" : "removed"),
+            simplifyIdentifier(change.lookupTarget()),
+            Math.max(1, change.count()),
+            true,
+            added
+        );
     }
 
     private static String extractMessagePayload(StoredEventRecord event) {
@@ -224,6 +203,11 @@ public final class LookupNetworkingService {
         }
         String cleaned = value.trim();
         return cleaned.startsWith("minecraft:") ? cleaned.substring("minecraft:".length()) : cleaned;
+    }
+
+    private static String selectorWord(Phrase phrase, String selector, String fallback) {
+        String selected = Phrase.getPhraseSelector(phrase, selector);
+        return selected == null || selected.isBlank() ? fallback : selected;
     }
 
     private record LookupNetworkPayload(String phraseSelector, String target, int amount, boolean container, boolean added) {

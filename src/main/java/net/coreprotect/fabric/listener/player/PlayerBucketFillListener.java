@@ -13,7 +13,7 @@ public final class PlayerBucketFillListener {
 
     public static void logBucketFill(ServerPlayerEntity player, ServerWorld world, BlockPos pos, BlockState originalState) {
         FabricRuntime runtime = CoreProtectFabricMod.getRuntime();
-        if (runtime == null || originalState == null || !runtime.config().logBuckets()) {
+        if (runtime == null || originalState == null || !runtime.config(world).logBuckets()) {
             return;
         }
 

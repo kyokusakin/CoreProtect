@@ -6,9 +6,6 @@ import net.coreprotect.fabric.util.LoggedItemData;
 import net.minecraft.entity.ItemEntity;
 import net.minecraft.inventory.Inventory;
 import net.minecraft.item.ItemStack;
-import net.minecraft.registry.Registries;
-import net.minecraft.screen.slot.SlotActionType;
-import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 
 import java.util.ArrayList;
@@ -47,34 +44,13 @@ public final class HopperTransactionLogger {
         if (runtime == null || actor == null || actor.isBlank() || pos == null) {
             return;
         }
-
-        for (ItemDeltaSnapshot.ItemDelta delta : ItemDeltaSnapshot.diff(before, after)) {
-            ItemStack stack = buildSyntheticStack(delta.item(), Math.abs(delta.delta()));
-            if (delta.delta() > 0) {
-                if (!stack.isEmpty()) {
-                    runtime.logger().logContainerTransaction(actor, worldKey, pos, containerType, -1, 0, SlotActionType.QUICK_MOVE, ItemStack.EMPTY, stack, ItemStack.EMPTY, ItemStack.EMPTY);
-                }
-                runtime.logger().logItemPickup(actor, worldKey, pos, delta.item(), delta.delta(), containerType);
-            }
-            else {
-                if (!stack.isEmpty()) {
-                    runtime.logger().logContainerTransaction(actor, worldKey, pos, containerType, -1, 0, SlotActionType.QUICK_MOVE, stack, ItemStack.EMPTY, ItemStack.EMPTY, ItemStack.EMPTY);
-                }
-                runtime.logger().logItemDrop(actor, worldKey, pos, delta.item(), -delta.delta(), containerType);
-            }
-        }
-    }
-
-    private static ItemStack buildSyntheticStack(LoggedItemData item, int count) {
-        if (item == null || item.itemKey() == null || item.itemKey().isBlank()) {
-            return ItemStack.EMPTY;
+        List<ItemDeltaSnapshot.ItemDelta> deltas = ItemDeltaSnapshot.diff(before, after);
+        if (runtime.config(worldKey).hopperFilterMeta() && deltas.stream().noneMatch(delta -> delta.item().hasMetadata())) {
+            return;
         }
 
-        Identifier identifier = Identifier.tryParse(item.itemKey());
-        if (identifier == null || !Registries.ITEM.containsId(identifier)) {
-            return ItemStack.EMPTY;
+        for (ItemDeltaSnapshot.ItemDelta delta : deltas) {
+            runtime.logger().logContainerChange(actor, worldKey, pos, containerType, delta.item(), Math.abs(delta.delta()), delta.delta() > 0);
         }
-
-        return new ItemStack(Registries.ITEM.get(identifier), Math.max(1, count));
     }
 }

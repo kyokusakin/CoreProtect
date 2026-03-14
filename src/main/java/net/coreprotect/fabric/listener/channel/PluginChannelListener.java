@@ -1,6 +1,10 @@
 package net.coreprotect.fabric.listener.channel;
 
 import net.coreprotect.fabric.CoreProtectFabricMod;
+import net.coreprotect.fabric.command.CoreProtectText;
+import net.coreprotect.fabric.language.PhraseService;
+import net.coreprotect.language.Phrase;
+import net.coreprotect.language.Selector;
 import net.coreprotect.fabric.permission.CoreProtectPermissions;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
@@ -191,13 +195,13 @@ public final class PluginChannelListener {
         boolean sign = true;
 
         switch (type) {
-            case "2" -> sendInfoData(source, timeAgo, "lookup.login.1", resultUser, amount, x, y, z, worldName);
+            case "2" -> sendInfoData(source, timeAgo, Phrase.getPhraseSelector(Phrase.LOOKUP_LOGIN, Selector.FIRST), resultUser, amount, x, y, z, worldName);
             case "3" -> sendMessageData(source, timeAgo, resultUser, message, sign, x, y, z, worldName);
             case "4" -> sendUsernameData(source, timeAgo, resultUser, "Arne");
-            default -> sendData(source, timeAgo, "lookup.container.1", resultUser, "clay_ball", amount, x, y, z, worldName, rbFormat, false, true);
+            default -> sendData(source, timeAgo, Phrase.getPhraseSelector(Phrase.LOOKUP_CONTAINER, Selector.FIRST), resultUser, "clay_ball", amount, x, y, z, worldName, rbFormat, false, true);
         }
 
-        source.sendFeedback(() -> Text.literal("CoreProtect - Network test data has been successful sent."), false);
+        source.sendFeedback(() -> CoreProtectText.prefixed(Phrase.build(Phrase.NETWORK_TEST)), false);
     }
 
     private void send(ServerCommandSource source, byte[] msgBytes) {

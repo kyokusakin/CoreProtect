@@ -24,7 +24,7 @@ public final class HopperPullListener {
         Map<LoggedItemData, Integer> afterSource
     ) {
         FabricRuntime runtime = CoreProtectFabricMod.getRuntime();
-        if (runtime == null || !runtime.config().hopperTransactions()) {
+        if (runtime == null || !runtime.config(world).hopperTransactions()) {
             return;
         }
 

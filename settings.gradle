@@ -8,4 +8,4 @@ pluginManagement {
     }
 }
 
-rootProject.name = "coreprotect-fabric-native"
+rootProject.name = "coreprotect-fabric"

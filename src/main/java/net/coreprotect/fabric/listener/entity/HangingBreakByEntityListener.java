@@ -29,8 +29,12 @@ public final class HangingBreakByEntityListener {
                 actor = "#obstruction";
             }
 
-            if (entity instanceof ItemFrameEntity itemFrameEntity && logDrops && !itemFrameEntity.getHeldItemStack().isEmpty()) {
-                CoreProtectFabricMod.getRuntime().logger().logItemDrop(actor, worldKey, decorationEntity.getAttachedBlockPos(), net.coreprotect.fabric.util.LoggedItemData.fromStack(itemFrameEntity.getHeldItemStack()), itemFrameEntity.getHeldItemStack().getCount(), "item_frame");
+            if (entity instanceof ItemFrameEntity itemFrameEntity
+                && logDrops
+                && !itemFrameEntity.getHeldItemStack().isEmpty()
+                && CoreProtectFabricMod.getRuntime() != null
+                && CoreProtectFabricMod.getRuntime().config(world).itemTransactions()) {
+                CoreProtectFabricMod.getRuntime().logger().logItemDrop(actor, worldKey, decorationEntity.getAttachedBlockPos(), net.coreprotect.fabric.util.LoggedItemData.fromStack(itemFrameEntity.getHeldItemStack(), world.getRegistryManager()), itemFrameEntity.getHeldItemStack().getCount(), "item_frame");
             }
             CoreProtectFabricMod.getRuntime().logger().logEntityBreak(actor, world, pos, entity);
             return;

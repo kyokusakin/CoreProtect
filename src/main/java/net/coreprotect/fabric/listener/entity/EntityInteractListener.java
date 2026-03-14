@@ -14,7 +14,7 @@ public final class EntityInteractListener {
 
     public static void logTurtleEggInteract(ServerWorld world, BlockPos pos, Entity entity, BlockState previousState, BlockState currentState) {
         FabricRuntime runtime = CoreProtectFabricMod.getRuntime();
-        if (runtime == null || entity == null || previousState == null || currentState == null || previousState.equals(currentState) || !runtime.config().logEntityChanges()) {
+        if (runtime == null || entity == null || previousState == null || currentState == null || previousState.equals(currentState) || !runtime.config(world).logEntityChanges()) {
             return;
         }
 

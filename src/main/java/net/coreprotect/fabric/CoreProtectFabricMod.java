@@ -12,7 +12,6 @@ import net.coreprotect.fabric.service.ContainerSessionService;
 import net.coreprotect.fabric.util.LoggedItemData;
 import net.fabricmc.api.DedicatedServerModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
-import net.fabricmc.fabric.api.entity.event.v1.ServerEntityCombatEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
@@ -26,6 +25,7 @@ import net.minecraft.entity.decoration.ArmorStandEntity;
 import net.minecraft.entity.decoration.ItemFrameEntity;
 import net.minecraft.block.Blocks;
 import net.minecraft.item.BlockItem;
+import net.minecraft.item.ItemPlacementContext;
 import net.minecraft.item.ItemStack;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.server.MinecraftServer;
@@ -64,15 +64,44 @@ public final class CoreProtectFabricMod implements DedicatedServerModInitializer
         ServerLifecycleEvents.SERVER_STARTED.register(this::onServerStarted);
         ServerLifecycleEvents.SERVER_STOPPING.register(this::onServerStopping);
 
-        ServerPlayConnectionEvents.JOIN.register((handler, sender, server) ->
-            runtime.logger().logPlayerJoin(handler.player)
-        );
+        ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
+            FabricRuntime currentRuntime = runtime;
+            if (currentRuntime == null) {
+                return;
+            }
+
+            var eventLogger = currentRuntime.logger();
+            if (eventLogger != null) {
+                eventLogger.logPlayerJoin(handler.player);
+            }
+        });
 
         ServerPlayConnectionEvents.DISCONNECT.register((handler, server) -> {
-            runtime.logger().logPlayerQuit(handler.player);
-            runtime.inspector().disable(handler.player);
-            runtime.containers().clear(handler.player);
-            runtime.previews().clear(handler.player.getUuid());
+            FabricRuntime currentRuntime = runtime;
+            if (currentRuntime == null) {
+                return;
+            }
+
+            var eventLogger = currentRuntime.logger();
+            if (eventLogger != null) {
+                eventLogger.logPlayerQuit(handler.player);
+            }
+
+            var inspectorService = currentRuntime.inspector();
+            if (inspectorService != null) {
+                inspectorService.disable(handler.player);
+            }
+
+            var containerSessionService = currentRuntime.containers();
+            if (containerSessionService != null) {
+                containerSessionService.clear(handler.player);
+            }
+
+            var previewService = currentRuntime.previews();
+            if (previewService != null) {
+                previewService.clear(handler.player.getUuid());
+            }
+
             PluginChannelHandshakeListener.getInstance().unregisterPlayer(handler.player);
         });
 
@@ -83,9 +112,6 @@ public final class CoreProtectFabricMod implements DedicatedServerModInitializer
 
             ServerPlayerEntity serverPlayer = (ServerPlayerEntity) player;
             ServerWorld serverWorld = (ServerWorld) world;
-            if (runtime.inspector().inspectBlock(serverPlayer, serverWorld, pos)) {
-                return ActionResult.FAIL;
-            }
             if (serverWorld.getBlockState(pos).isOf(Blocks.DRAGON_EGG)) {
                 PlayerInteractUtils.clickedDragonEgg(serverPlayer, serverWorld, pos);
             }
@@ -117,12 +143,24 @@ public final class CoreProtectFabricMod implements DedicatedServerModInitializer
             if (player instanceof ServerPlayerEntity && world instanceof ServerWorld) {
                 ServerPlayerEntity serverPlayer = (ServerPlayerEntity) player;
                 ServerWorld serverWorld = (ServerWorld) world;
-                BlockPos pos = hitResult.getBlockPos();
-                if (runtime.inspector().inspectBlock(serverPlayer, serverWorld, pos)) {
+                BlockPos clickedPos = hitResult.getBlockPos();
+                BlockPos inspectPos = clickedPos;
+                if (player.getStackInHand(hand).getItem() instanceof BlockItem) {
+                    inspectPos = new ItemPlacementContext(serverPlayer, hand, player.getStackInHand(hand), hitResult).getBlockPos();
+                }
+
+                if (runtime.inspector().inspectRightClickBlock(serverPlayer, serverWorld, clickedPos, inspectPos)) {
+                    if (player.getStackInHand(hand).getItem() instanceof BlockItem) {
+                        // Keep client inventory in sync when inspect mode suppresses placement.
+                        serverPlayer.getInventory().markDirty();
+                        serverPlayer.playerScreenHandler.syncState();
+                        serverPlayer.currentScreenHandler.sendContentUpdates();
+                        return ActionResult.SUCCESS_SERVER;
+                    }
                     return ActionResult.FAIL;
                 }
-                if (serverWorld.getBlockState(pos).isOf(Blocks.DRAGON_EGG)) {
-                    PlayerInteractUtils.clickedDragonEgg(serverPlayer, serverWorld, pos);
+                if (serverWorld.getBlockState(clickedPos).isOf(Blocks.DRAGON_EGG)) {
+                    PlayerInteractUtils.clickedDragonEgg(serverPlayer, serverWorld, clickedPos);
                 }
             }
 
@@ -161,16 +199,19 @@ public final class CoreProtectFabricMod implements DedicatedServerModInitializer
             runtime.logger().logChat(sender, (net.minecraft.server.world.ServerWorld) sender.getEntityWorld(), sender.getBlockPos(), message.getContent().getString())
         );
 
-        ServerEntityCombatEvents.AFTER_KILLED_OTHER_ENTITY.register(EntityDeathListener::logEntityKill);
     }
 
     private void onServerStarted(MinecraftServer server) {
         runtime.initialize(server);
-        runtime.logger().logServerStart(server);
+        if (runtime.logger() != null) {
+            runtime.logger().logServerStart(server);
+        }
     }
 
     private void onServerStopping(MinecraftServer server) {
-        runtime.logger().logServerStop(server);
+        if (runtime.logger() != null) {
+            runtime.logger().logServerStop(server);
+        }
         runtime.shutdown();
     }
 
@@ -208,6 +249,15 @@ public final class CoreProtectFabricMod implements DedicatedServerModInitializer
         }
 
         currentRuntime.logger().logContainerTransaction(player, worldKey, pos, containerType, slotIndex, button, actionType, beforeSlot, afterSlot, beforeCursor, afterCursor);
+    }
+
+    public static void logContainerChange(ServerPlayerEntity player, String worldKey, BlockPos pos, String containerType, LoggedItemData item, int count, boolean added) {
+        FabricRuntime currentRuntime = runtime;
+        if (currentRuntime == null) {
+            return;
+        }
+
+        currentRuntime.logger().logContainerChange(player, worldKey, pos, containerType, item, count, added);
     }
 
     public static void logItemPickup(ServerPlayerEntity player, ServerWorld world, BlockPos pos, ItemStack stack) {

@@ -2,11 +2,10 @@ package net.coreprotect.fabric.mixin;
 
 import net.coreprotect.fabric.CoreProtectFabricMod;
 import net.coreprotect.fabric.FabricRuntime;
+import net.coreprotect.fabric.hook.BucketItemHooks;
 import net.coreprotect.fabric.listener.player.PlayerBucketEmptyListener;
 import net.coreprotect.fabric.listener.player.PlayerBucketFillListener;
-import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
-import net.minecraft.block.FluidFillable;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.fluid.Fluid;
 import net.minecraft.fluid.Fluids;
@@ -32,70 +31,54 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(BucketItem.class)
 public abstract class BucketItemMixin {
-    @Unique
-    private static final ThreadLocal<BucketUseContext> coreprotect$bucketUseContext = new ThreadLocal<>();
-    @Unique
-    private static final ThreadLocal<EntityBucketContext> coreprotect$entityBucketContext = new ThreadLocal<>();
-
     @Shadow
     @Final
     private Fluid fluid;
 
-    @Shadow
-    protected static BlockHitResult raycast(World world, PlayerEntity player, RaycastContext.FluidHandling fluidHandling) {
-        throw new AssertionError();
-    }
-
     @Inject(method = "use", at = @At("HEAD"))
     private void coreprotect$captureBucketUse(World world, PlayerEntity user, Hand hand, CallbackInfoReturnable<ActionResult> cir) {
         if (!(world instanceof ServerWorld serverWorld) || !(user instanceof ServerPlayerEntity serverPlayer)) {
-            coreprotect$bucketUseContext.remove();
-            coreprotect$entityBucketContext.remove();
+            BucketItemHooks.clear();
             return;
         }
 
         FabricRuntime runtime = CoreProtectFabricMod.getRuntime();
-        if (runtime == null || !runtime.config().logBuckets()) {
-            coreprotect$bucketUseContext.remove();
-            coreprotect$entityBucketContext.remove();
+        if (runtime == null || !runtime.config(serverWorld).logBuckets()) {
+            BucketItemHooks.clear();
             return;
         }
 
         if ((Object) this instanceof EntityBucketItem) {
-            coreprotect$entityBucketContext.set(new EntityBucketContext(serverPlayer));
+            BucketItemHooks.setEntityContext(new BucketItemHooks.EntityBucketContext(serverPlayer));
         }
         else {
-            coreprotect$entityBucketContext.remove();
+            BucketItemHooks.clearEntityContext();
         }
 
         RaycastContext.FluidHandling fluidHandling = fluid == Fluids.EMPTY
             ? RaycastContext.FluidHandling.SOURCE_ONLY
             : RaycastContext.FluidHandling.NONE;
-        BlockHitResult hitResult = raycast(world, user, fluidHandling);
+        BlockHitResult hitResult = ItemAccessor.coreprotect$invokeRaycast(world, user, fluidHandling);
         if (hitResult.getType() != HitResult.Type.BLOCK) {
-            coreprotect$bucketUseContext.remove();
+            BucketItemHooks.clearBucketContext();
             return;
         }
 
         BlockPos blockPos = hitResult.getBlockPos();
         if (fluid == Fluids.EMPTY) {
-            coreprotect$bucketUseContext.set(new BucketUseContext(serverPlayer, serverWorld, true, blockPos.toImmutable(), serverWorld.getBlockState(blockPos), null));
+            BucketItemHooks.setBucketContext(new BucketItemHooks.BucketUseContext(serverPlayer, serverWorld, true, blockPos.toImmutable(), null, serverWorld.getBlockState(blockPos), null));
             return;
         }
 
         Direction side = hitResult.getSide();
         BlockPos offsetPos = blockPos.offset(side);
-        BlockState clickedState = serverWorld.getBlockState(blockPos);
-        Block clickedBlock = clickedState.getBlock();
-        BlockPos targetPos = clickedBlock instanceof FluidFillable && fluid == Fluids.WATER ? blockPos : offsetPos;
-        coreprotect$bucketUseContext.set(new BucketUseContext(serverPlayer, serverWorld, false, targetPos.toImmutable(), null, fluid));
+        BucketItemHooks.setBucketContext(new BucketItemHooks.BucketUseContext(serverPlayer, serverWorld, false, blockPos.toImmutable(), offsetPos.toImmutable(), null, fluid));
     }
 
     @Inject(method = "use", at = @At("RETURN"))
     private void coreprotect$logBucketUse(World world, PlayerEntity user, Hand hand, CallbackInfoReturnable<ActionResult> cir) {
-        BucketUseContext context = coreprotect$bucketUseContext.get();
-        coreprotect$bucketUseContext.remove();
-        coreprotect$entityBucketContext.remove();
+        BucketItemHooks.BucketUseContext context = BucketItemHooks.consumeBucketContext();
+        BucketItemHooks.clearEntityContext();
         if (context == null || !cir.getReturnValue().isAccepted()) {
             return;
         }
@@ -105,28 +88,34 @@ public abstract class BucketItemMixin {
             return;
         }
 
-        PlayerBucketEmptyListener.logBucketEmpty(context.player(), context.world(), context.pos(), context.fluid());
+        BlockPos logPos = resolveBucketEmptyLogPos(context);
+        PlayerBucketEmptyListener.logBucketEmpty(context.player(), context.world(), logPos, context.fluid());
     }
 
     @Unique
-    private record BucketUseContext(
-        ServerPlayerEntity player,
-        ServerWorld world,
-        boolean fill,
-        BlockPos pos,
-        BlockState originalState,
-        Fluid fluid
-    ) {
+    private BlockPos resolveBucketEmptyLogPos(BucketItemHooks.BucketUseContext context) {
+        BlockPos primaryPos = context.pos();
+        BlockPos alternatePos = context.alternatePos();
+        Fluid bucketFluid = context.fluid();
+        if (alternatePos == null || bucketFluid == null) {
+            return primaryPos;
+        }
+
+        BlockState primaryState = context.world().getBlockState(primaryPos);
+        if (stateReflectsBucketFluid(primaryState, bucketFluid)) {
+            return primaryPos;
+        }
+
+        BlockState alternateState = context.world().getBlockState(alternatePos);
+        if (stateReflectsBucketFluid(alternateState, bucketFluid)) {
+            return alternatePos;
+        }
+
+        return primaryPos;
     }
 
     @Unique
-    static EntityBucketContext coreprotect$consumeEntityBucketContext() {
-        EntityBucketContext context = coreprotect$entityBucketContext.get();
-        coreprotect$entityBucketContext.remove();
-        return context;
-    }
-
-    @Unique
-    record EntityBucketContext(ServerPlayerEntity player) {
+    private boolean stateReflectsBucketFluid(BlockState state, Fluid fluid) {
+        return !state.getFluidState().isEmpty() && state.getFluidState().getFluid() == fluid;
     }
 }

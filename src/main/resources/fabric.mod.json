@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "coreprotect_fabric",
   "version": "${version}",
-  "name": "CoreProtect Fabric Native",
-  "description": "Native Fabric rewrite of CoreProtect with SQLite-backed audit logging.",
+  "name": "CoreProtect Fabric",
+  "description": "Fabric rewrite of CoreProtect with SQLite-backed audit logging.",
   "authors": [
     "Intelli",
     "OpenAI Codex"
@@ -24,7 +24,7 @@
   ],
   "depends": {
     "fabricloader": ">=0.18.4",
-    "minecraft": "1.21.11",
+    "minecraft": "~1.21",
     "java": ">=21",
     "fabric-api": "*",
     "fabric-permissions-api-v0": "*"
