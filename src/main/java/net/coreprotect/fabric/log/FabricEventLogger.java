@@ -44,6 +44,7 @@ import java.util.Locale;
 import java.util.UUID;
 
 public final class FabricEventLogger {
+    private static final int MAX_ENTITY_NBT_LENGTH = 32_768;
     private final Object cutoverMonitor = new Object();
     private final Logger logger;
     private CoreProtectDatabase database;
@@ -813,6 +814,7 @@ public final class FabricEventLogger {
     private String serializeEntityState(Entity entity) {
         StringBuilder payload = new StringBuilder();
         payload.append("type=").append(describeEntityType(entity));
+        payload.append('\n').append("uuid=").append(entity.getUuidAsString());
         if (entity instanceof AbstractDecorationEntity) {
             AbstractDecorationEntity decorationEntity = (AbstractDecorationEntity) entity;
             payload.append('\n').append("facing=").append(decorationEntity.getHorizontalFacing().asString());
@@ -823,7 +825,7 @@ public final class FabricEventLogger {
                 .append('\n').append("rotation=").append(itemFrameEntity.getRotation());
         }
         if (entity instanceof ArmorStandEntity) {
-            appendArmorStandEquipment(payload, (ArmorStandEntity) entity, '\n');
+            appendArmorStandPayload(payload, (ArmorStandEntity) entity, '\n');
         }
         if (entity instanceof AbstractBoatEntity || entity instanceof AbstractMinecartEntity) {
             payload.append('\n').append("yaw=").append(Math.round(entity.getYaw()));
@@ -863,7 +865,11 @@ public final class FabricEventLogger {
             entity.saveSelfData(writeView);
             nbt.copyFrom(writeView.getNbt());
             nbt.remove("UUID");
-            return nbt.toString();
+            String serialized = nbt.toString();
+            if (serialized.length() > MAX_ENTITY_NBT_LENGTH) {
+                return "";
+            }
+            return serialized;
         }
         catch (RuntimeException exception) {
             logger.debug("Unable to serialize entity NBT for {}", describeEntityType(entity), exception);
@@ -924,7 +930,7 @@ public final class FabricEventLogger {
             }
         }
         if (entity instanceof ArmorStandEntity) {
-            appendArmorStandEquipment(summary, (ArmorStandEntity) entity, ' ');
+            appendArmorStandSummary(summary, (ArmorStandEntity) entity, ' ');
         }
         if ((entity instanceof AbstractBoatEntity || entity instanceof AbstractMinecartEntity) && Math.round(entity.getYaw()) != 0) {
             summary.append(" yaw=").append(Math.round(entity.getYaw()));
@@ -1016,6 +1022,24 @@ public final class FabricEventLogger {
         return "#" + simplifyIdentifier(name);
     }
 
+    private void appendArmorStandPayload(StringBuilder builder, ArmorStandEntity armorStand, char separator) {
+        appendArmorStandBoolean(builder, "ShowArms", armorStand.shouldShowArms(), separator);
+        appendArmorStandBoolean(builder, "Small", armorStand.isSmall(), separator);
+        appendArmorStandBoolean(builder, "NoBasePlate", !armorStand.shouldShowBasePlate(), separator);
+        appendArmorStandBoolean(builder, "Marker", armorStand.isMarker(), separator);
+        appendArmorStandBoolean(builder, "Invisible", armorStand.isInvisible(), separator);
+        appendArmorStandEquipment(builder, armorStand, separator);
+    }
+
+    private void appendArmorStandSummary(StringBuilder builder, ArmorStandEntity armorStand, char separator) {
+        appendArmorStandBooleanIfTrue(builder, "ShowArms", armorStand.shouldShowArms(), separator);
+        appendArmorStandBooleanIfTrue(builder, "Small", armorStand.isSmall(), separator);
+        appendArmorStandBooleanIfTrue(builder, "NoBasePlate", !armorStand.shouldShowBasePlate(), separator);
+        appendArmorStandBooleanIfTrue(builder, "Marker", armorStand.isMarker(), separator);
+        appendArmorStandBooleanIfTrue(builder, "Invisible", armorStand.isInvisible(), separator);
+        appendArmorStandEquipment(builder, armorStand, separator);
+    }
+
     private void appendArmorStandEquipment(StringBuilder builder, ArmorStandEntity armorStand, char separator) {
         appendEquipment(builder, "feet", armorStand.getEquippedStack(EquipmentSlot.FEET), separator);
         appendEquipment(builder, "legs", armorStand.getEquippedStack(EquipmentSlot.LEGS), separator);
@@ -1023,6 +1047,17 @@ public final class FabricEventLogger {
         appendEquipment(builder, "head", armorStand.getEquippedStack(EquipmentSlot.HEAD), separator);
         appendEquipment(builder, "mainhand", armorStand.getEquippedStack(EquipmentSlot.MAINHAND), separator);
         appendEquipment(builder, "offhand", armorStand.getEquippedStack(EquipmentSlot.OFFHAND), separator);
+    }
+
+    private void appendArmorStandBoolean(StringBuilder builder, String key, boolean value, char separator) {
+        builder.append(separator).append(key).append("=").append(value);
+    }
+
+    private void appendArmorStandBooleanIfTrue(StringBuilder builder, String key, boolean value, char separator) {
+        if (!value) {
+            return;
+        }
+        appendArmorStandBoolean(builder, key, true, separator);
     }
 
     private void appendEquipment(StringBuilder builder, String slot, ItemStack stack, char separator) {

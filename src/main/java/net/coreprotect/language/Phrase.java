@@ -1,9 +1,17 @@
 package net.coreprotect.language;
 
+import net.coreprotect.utility.ChatMessage;
+import net.coreprotect.utility.Color;
+import net.coreprotect.utility.StringUtils;
+
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public enum Phrase {
+
     ACTION_NOT_SUPPORTED,
     AMOUNT_BLOCK,
     AMOUNT_CHUNK,
@@ -91,6 +99,9 @@ public enum Phrase {
     INTEGRATION_VERSION,
     INTERACTIONS_HEADER,
     INVALID_ACTION,
+    INVALID_BRANCH_1,
+    INVALID_BRANCH_2,
+    INVALID_BRANCH_3,
     INVALID_CONTAINER,
     INVALID_DONATION_KEY,
     INVALID_INCLUDE,
@@ -207,10 +218,15 @@ public enum Phrase {
     USING_MYSQL,
     USING_SQLITE,
     VALID_DONATION_KEY,
-    VERSION_INCOMPATIBLE,
     VERSION_NOTICE,
+    VERSION_INCOMPATIBLE,
     VERSION_REQUIRED,
     WORLD_NOT_FOUND;
+
+    final private static Set<Phrase> HEADERS = new HashSet<>(Arrays.asList(Phrase.CONTAINER_HEADER, Phrase.HELP_HEADER, Phrase.INTERACTIONS_HEADER, Phrase.LOOKUP_HEADER, Phrase.SIGN_HEADER, Phrase.UPDATE_HEADER));
+    final private static Set<String> COLORS = new HashSet<>(Arrays.asList(Color.WHITE, Color.DARK_AQUA));
+    final private static String SPLIT = ":";
+    final private static String FULL_WIDTH_SPLIT = "：";
 
     public String getPhrase() {
         return Language.getPhrase(this);
@@ -226,35 +242,97 @@ public enum Phrase {
 
     public static String build(Phrase phrase, String... params) {
         String output = phrase.getTranslatedPhrase();
+
+        // If translated phrase is null, fall back to the default phrase
         if (output == null) {
             output = phrase.getPhrase();
+            // If that's still null, use an empty string to avoid NullPointerException
+            if (output == null) {
+                output = "";
+            }
         }
+
+        String color = "";
+
+        if (HEADERS.contains(phrase)) {
+            output = StringUtils.capitalize(output, true);
+        }
+
+        int index = 0;
+        int indexExtra = 0;
+        for (String param : params) {
+            if (index == 0 && COLORS.contains(param)) {
+                color = param;
+                indexExtra++;
+                continue;
+            }
+
+            if (Selector.SELECTORS.contains(param)) {
+                output = Selector.processSelection(output, param, color);
+                indexExtra++;
+                continue;
+            }
+
+            if (output.contains("{" + index + "}")) {
+                output = output.replace("{" + index + "}", param);
+                index++;
+            }
+        }
+
+        if ((index + indexExtra) != params.length) { // fallback for issues with user modified phrases
+            // System.out.println("buildInternal"); // debug
+            output = buildInternal(phrase, params, color);
+        }
+
+        if (color.length() > 0) {
+            output = output.replaceFirst(SPLIT, SPLIT + color);
+            output = output.replaceFirst(FULL_WIDTH_SPLIT, FULL_WIDTH_SPLIT + color);
+            output = ChatMessage.parseQuotes(output, color);
+        }
+
+        return output;
+    }
+
+    private static String buildInternal(Phrase phrase, String[] params, String color) {
+        String output = phrase.getPhrase(); // get internal phrase
+
+        // If internal phrase is null, use an empty string to avoid NullPointerException
         if (output == null) {
-            return "";
+            output = "";
+            return output; // Return empty string immediately if no phrase is available
         }
 
         int index = 0;
         for (String param : params) {
+            if (index == 0 && COLORS.contains(param)) {
+                continue;
+            }
             if (Selector.SELECTORS.contains(param)) {
-                output = Selector.processSelection(output, param);
+                output = Selector.processSelection(output, param, color);
                 continue;
             }
             output = output.replace("{" + index + "}", param);
             index++;
         }
+
         return output;
     }
 
     public static String getPhraseSelector(Phrase phrase, String selector) {
         String translatedPhrase = phrase.getTranslatedPhrase();
+        // Return empty string if translated phrase is null
         if (translatedPhrase == null) {
             return "";
         }
 
-        Matcher matcher = Pattern.compile("(\\{[^{}|]+(?:\\|[^{}|]+)+})").matcher(translatedPhrase);
-        if (!matcher.find()) {
-            return "";
+        Pattern phrasePattern = Pattern.compile("(\\{[a-zA-Z| ]+})");
+        Matcher patternMatch = phrasePattern.matcher(translatedPhrase);
+        String match = "";
+        if (patternMatch.find()) {
+            match = patternMatch.group(1);
+            match = Selector.processSelection(match, selector, "");
         }
-        return Selector.processSelection(matcher.group(1), selector).replace("{", "").replace("}", "");
+
+        return match;
     }
 }

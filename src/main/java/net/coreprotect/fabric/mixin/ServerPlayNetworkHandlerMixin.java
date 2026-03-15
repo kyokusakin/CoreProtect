@@ -121,9 +121,6 @@ public abstract class ServerPlayNetworkHandlerMixin {
             if (Arrays.equals(coreprotect$beforeSignLines, currentLines)) {
                 return;
             }
-            if (!Arrays.equals(packet.getText(), currentLines)) {
-                return;
-            }
 
             CoreProtectFabricMod.logSignChange(this.player, (ServerWorld) this.player.getEntityWorld(), coreprotect$signPos, coreprotect$signFront, currentLines);
         }
@@ -144,6 +141,10 @@ public abstract class ServerPlayNetworkHandlerMixin {
 
         ContainerSessionService.ContainerContext context = CoreProtectFabricMod.getContainerContext(this.player);
         if (context == null) {
+            return;
+        }
+
+        if (CoreProtectFabricMod.getRuntime() == null || !CoreProtectFabricMod.getRuntime().config(context.worldKey()).itemTransactions()) {
             return;
         }
 
@@ -203,6 +204,10 @@ public abstract class ServerPlayNetworkHandlerMixin {
 
         ContainerSessionService.ContainerContext context = CoreProtectFabricMod.getContainerContext(this.player);
         if (context == null) {
+            return;
+        }
+
+        if (CoreProtectFabricMod.getRuntime() == null || !CoreProtectFabricMod.getRuntime().config(context.worldKey()).itemTransactions()) {
             return;
         }
 

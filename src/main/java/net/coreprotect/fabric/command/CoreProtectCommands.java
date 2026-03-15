@@ -56,8 +56,16 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 public final class CoreProtectCommands {
     private static final String COMMAND_PREFIX = "CoreProtect - ";
@@ -70,6 +78,17 @@ public final class CoreProtectCommands {
     private static final int CONSOLE_PURGE_MIN_SECONDS = 24 * 60 * 60;
     private static final long TELEPORT_THROTTLE_MS = 500L;
     private static final Map<UUID, Long> TELEPORT_THROTTLE = new ConcurrentHashMap<>();
+    private static final AtomicBoolean PURGE_RUNNING = new AtomicBoolean(false);
+    private static final Set<String> ACTIVE_ROLLBACK_SESSIONS = ConcurrentHashMap.newKeySet();
+    private static final AtomicInteger COMMAND_WORKER_IDS = new AtomicInteger(1);
+    private static final ExecutorService COMMAND_ASYNC_EXECUTOR = Executors.newFixedThreadPool(
+        Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors())),
+        runnable -> {
+            Thread thread = new Thread(runnable, "coreprotect-command-" + COMMAND_WORKER_IDS.getAndIncrement());
+            thread.setDaemon(true);
+            return thread;
+        }
+    );
 
     private CoreProtectCommands() {
     }
@@ -463,6 +482,38 @@ public final class CoreProtectCommands {
         sendCoreProtectMessage(source, PhraseService.getInstance().phrase(key, fallback, args));
     }
 
+    private static <T> void submitAsync(
+        MinecraftServer server,
+        Supplier<T> task,
+        Consumer<T> onSuccess,
+        Consumer<Throwable> onFailure
+    ) {
+        CompletableFuture
+            .supplyAsync(task, COMMAND_ASYNC_EXECUTOR)
+            .whenComplete((result, throwable) -> server.execute(() -> {
+                if (throwable != null) {
+                    if (onFailure != null) {
+                        Throwable cause = throwable.getCause() != null ? throwable.getCause() : throwable;
+                        onFailure.accept(cause);
+                    }
+                    return;
+                }
+                if (onSuccess != null) {
+                    onSuccess.accept(result);
+                }
+            }));
+    }
+
+    private static void handleLookupFailure(ServerCommandSource source, Throwable throwable) {
+        CoreProtectFabricMod.LOGGER.error("CoreProtect lookup failed", throwable);
+        sendLocalizedMessage(source, "fabric.lookup.failed", "CoreProtect - Lookup failed. Check the server log for details.");
+    }
+
+    private static void handleRollbackFailure(ServerCommandSource source, Throwable throwable) {
+        CoreProtectFabricMod.LOGGER.error("CoreProtect rollback task failed", throwable);
+        sendLocalizedMessage(source, "fabric.rollback.failed", "CoreProtect - Rollback task failed. Check the server log for details.");
+    }
+
     private static void sendLine(ServerCommandSource source, String line) {
         source.sendFeedback(() -> CoreProtectText.line(line), false);
     }
@@ -574,9 +625,37 @@ public final class CoreProtectCommands {
             return 0;
         }
 
-        List<Text> lines = runtime.lookup().describeTargetedEntityHistory(player, limit);
-        sendLines(source, lines);
-        LookupNetworkingService.send(source, runtime.lookup().getTargetedEntityHistory(player, limit, null));
+        String worldKey = ((ServerWorld) player.getEntityWorld()).getRegistryKey().getValue().toString();
+        BlockPos historyPos = runtime.lookup().findTargetedEntityHistoryPos(player, 20.0D);
+        if (historyPos == null) {
+            sendCoreProtectMessage(source, Phrase.build(Phrase.NO_DATA_LOCATION, Selector.FIRST));
+            return 0;
+        }
+
+        submitAsync(
+            source.getServer(),
+            () -> {
+                List<StoredEventRecord> renderedEvents = runtime.lookup().loadBlockHistory(worldKey, historyPos, limit, List.of(
+                    CoreProtectEventType.ENTITY_PLACE,
+                    CoreProtectEventType.ENTITY_BREAK,
+                    CoreProtectEventType.ENTITY_USE
+                ));
+                List<StoredEventRecord> networkEvents = runtime.lookup().loadBlockHistory(worldKey, historyPos, limit, null);
+                List<Text> lines = runtime.lookup().renderBlockHistory(
+                    worldKey,
+                    historyPos,
+                    renderedEvents,
+                    "CoreProtect",
+                    COMMAND_PREFIX + Phrase.build(Phrase.NO_DATA_LOCATION, Selector.FIRST)
+                );
+                return new LookupRenderResult(lines, networkEvents, 1, null);
+            },
+            result -> {
+                sendLines(source, result.lines());
+                sendLookupNetworkData(source, result.networkEvents());
+            },
+            throwable -> handleLookupFailure(source, throwable)
+        );
         return 1;
     }
 
@@ -703,18 +782,20 @@ public final class CoreProtectCommands {
         }
 
         ServerWorld world = (ServerWorld) player.getEntityWorld();
-        List<Text> lines = runtime.lookup().describeNearbyHistory(world, player.getBlockPos(), radius, seconds, limit, actorName, actionFilter);
-        List<StoredEventRecord> networkEvents = runtime.database().lookupNearby(
-            world.getRegistryKey().getValue().toString(),
-            player.getBlockPos(),
-            radius,
-            seconds,
-            limit,
-            actorName,
-            actionFilter
+        String worldKey = world.getRegistryKey().getValue().toString();
+        BlockPos center = player.getBlockPos().toImmutable();
+        submitAsync(
+            source.getServer(),
+            () -> {
+                List<StoredEventRecord> events = runtime.lookup().loadNearbyHistory(worldKey, center, radius, seconds, limit, actorName, actionFilter);
+                return new LookupRenderResult(runtime.lookup().renderNearbyHistory(events), events, 1, null);
+            },
+            result -> {
+                sendLines(source, result.lines());
+                sendLookupNetworkData(source, result.networkEvents());
+            },
+            throwable -> handleLookupFailure(source, throwable)
         );
-        sendLines(source, lines);
-        sendLookupNetworkData(source, networkEvents);
         return 1;
     }
 
@@ -731,6 +812,13 @@ public final class CoreProtectCommands {
 
         List<String> actorNames = withoutActorToken(options.actorNames(), "#container");
         List<CoreProtectEventType> actionFilter = options.actionFilter();
+        if (hasContainerAction(actionFilter) && hasItemAction(actionFilter)) {
+            String invalidActor = firstHashedActor(options.actorNames());
+            if (invalidActor != null) {
+                sendCoreProtectPhrase(source, Phrase.INVALID_USERNAME, invalidActor);
+                return 0;
+            }
+        }
         ContainerContinuationContext containerContinuation = null;
         if (containsActorToken(options.actorNames(), "#container")) {
             if (!supportsContainerContinuationActions(actionFilter)) {
@@ -743,6 +831,36 @@ public final class CoreProtectCommands {
                 return 0;
             }
             actionFilter = ensureActionFilter(actionFilter, CoreProtectEventType.CONTAINER_TRANSACTION);
+        }
+        if (!validateLookupUsers(source, runtime, actorNames, options.excludeActorNames())) {
+            return 0;
+        }
+        if (hasActorOnlyLookupAction(actionFilter)) {
+            if (options.includeTargets() != null && !options.includeTargets().isEmpty()) {
+                sendCoreProtectPhrase(source, Phrase.INCOMPATIBLE_ACTION, "i:");
+                return 0;
+            }
+            if (options.excludeTargets() != null && !options.excludeTargets().isEmpty()) {
+                sendCoreProtectPhrase(source, Phrase.INCOMPATIBLE_ACTION, "e:");
+                return 0;
+            }
+            if (containsUsernameLookupAction(actionFilter)
+                && (options.radius() != null
+                    || isWorldEditWorldFilter(options.worldFilter())
+                    || (options.worldFilter() != null && !isGlobalWorldFilter(options.worldFilter())))) {
+                sendCoreProtectPhrase(source, Phrase.INCOMPATIBLE_ACTION, "r:");
+                return 0;
+            }
+        }
+        if (options.seconds() == null
+            && ((actorNames != null && !actorNames.isEmpty())
+                || (options.includeTargets() != null && !options.includeTargets().isEmpty()))) {
+            sendCoreProtectPhrase(source, Phrase.MISSING_LOOKUP_TIME, Selector.FIRST);
+            return 0;
+        }
+        if (hasContainerAction(actionFilter) && hasItemAction(actionFilter) && (actorNames == null || actorNames.isEmpty())) {
+            sendCoreProtectPhrase(source, Phrase.MISSING_ACTION_USER);
+            return 0;
         }
 
         if (!CoreProtectPermissions.canLookupNearby(source, actionFilter, true)) {
@@ -809,110 +927,98 @@ public final class CoreProtectCommands {
         String actorSummary = describeActors(actorNames, options.excludeActorNames());
         String targetSummary = describeTargetFilters(options.includeTargets(), options.excludeTargets());
         BlockPos center = legacyBounds == null && player != null && radius != null ? player.getBlockPos().toImmutable() : null;
+        QueryBounds lookupBounds = selectionBounds != null ? selectionBounds : legacyBounds;
+        Integer lookupRadius = lookupBounds == null ? radius : null;
+        String lookupWorldKey = worldKey;
+        List<CoreProtectEventType> lookupActionFilter = actionFilter;
+        List<String> lookupIncludeTargets = options.includeTargets();
+        List<String> lookupExcludeTargets = options.excludeTargets();
+        List<String> lookupExcludeActors = options.excludeActorNames();
         if (options.count()) {
-            int total = runtime.lookup().countScopedHistory(
-                worldKey,
-                center,
-                legacyBounds == null ? radius : null,
-                selectionBounds != null ? selectionBounds : legacyBounds,
-                minimumSeconds,
-                seconds,
-                actorNames,
-                options.excludeActorNames(),
-                actionFilter,
-                options.includeTargets(),
-                options.excludeTargets()
+            submitAsync(
+                source.getServer(),
+                () -> runtime.lookup().countScopedHistory(
+                    lookupWorldKey,
+                    center,
+                    lookupRadius,
+                    lookupBounds,
+                    minimumSeconds,
+                    seconds,
+                    actorNames,
+                    lookupExcludeActors,
+                    lookupActionFilter,
+                    lookupIncludeTargets,
+                    lookupExcludeTargets
+                ),
+                total -> sendCoreProtectPhrase(source, Phrase.LOOKUP_ROWS_FOUND, NumberFormat.getInstance().format(total), total == 1 ? Selector.FIRST : Selector.SECOND),
+                throwable -> handleLookupFailure(source, throwable)
             );
-            sendCoreProtectPhrase(source, Phrase.LOOKUP_ROWS_FOUND, NumberFormat.getInstance().format(total), total == 1 ? Selector.FIRST : Selector.SECOND);
-            return total > 0 ? 1 : 0;
+            return 1;
         }
 
-        int total = runtime.lookup().countScopedHistory(
-            worldKey,
-            center,
-            legacyBounds == null ? radius : null,
-            selectionBounds != null ? selectionBounds : legacyBounds,
-            minimumSeconds,
-            seconds,
-            actorNames,
-            options.excludeActorNames(),
-            actionFilter,
-            options.includeTargets(),
-            options.excludeTargets()
-        );
-        int totalPages = Math.max(1, (int) Math.ceil(total / (double) limit));
         LookupSessionService.LookupQuery query = new LookupSessionService.LookupQuery(
-            worldKey,
+            lookupWorldKey,
             center,
-            legacyBounds == null ? radius : null,
-            selectionBounds != null ? selectionBounds : legacyBounds,
+            lookupRadius,
+            lookupBounds,
             minimumSeconds,
             seconds,
             limit,
             actorNames,
-            options.excludeActorNames(),
-            actionFilter,
-            options.includeTargets(),
-            options.excludeTargets()
+            lookupExcludeActors,
+            lookupActionFilter,
+            lookupIncludeTargets,
+            lookupExcludeTargets
         );
         runtime.lookupSessions().remember(lookupSessionKey(source), query);
-        List<StoredEventRecord> networkEvents = runtime.lookup().getScopedHistory(
-            worldKey,
-            center,
-            legacyBounds == null ? radius : null,
-            selectionBounds != null ? selectionBounds : legacyBounds,
-            minimumSeconds,
-            seconds,
-            limit,
-            0,
-            actorNames,
-            options.excludeActorNames(),
-            actionFilter,
-            options.includeTargets(),
-            options.excludeTargets()
+        submitAsync(
+            source.getServer(),
+            () -> {
+                int total = runtime.lookup().countScopedHistory(
+                    lookupWorldKey,
+                    center,
+                    lookupRadius,
+                    lookupBounds,
+                    minimumSeconds,
+                    seconds,
+                    actorNames,
+                    lookupExcludeActors,
+                    lookupActionFilter,
+                    lookupIncludeTargets,
+                    lookupExcludeTargets
+                );
+                int totalPages = Math.max(1, (int) Math.ceil(total / (double) limit));
+                List<StoredEventRecord> networkEvents = runtime.lookup().getScopedHistory(
+                    lookupWorldKey,
+                    center,
+                    lookupRadius,
+                    lookupBounds,
+                    minimumSeconds,
+                    seconds,
+                    limit,
+                    0,
+                    actorNames,
+                    lookupExcludeActors,
+                    lookupActionFilter,
+                    lookupIncludeTargets,
+                    lookupExcludeTargets
+                );
+                List<Text> lines = runtime.lookup().renderScopedHistory(networkEvents);
+                return new LookupRenderResult(lines, networkEvents, totalPages, total <= 0 ? Phrase.NO_RESULTS_PAGE : null);
+            },
+            result -> {
+                if (result.emptyPhrase() != null) {
+                    sendCoreProtectPhrase(source, result.emptyPhrase(), Selector.FIRST);
+                    return;
+                }
+                sendLines(source, result.lines());
+                sendLookupNetworkData(source, result.networkEvents());
+                if (result.totalPages() > 1) {
+                    source.sendFeedback(() -> buildLookupNavigation(1, result.totalPages()), false);
+                }
+            },
+            throwable -> handleLookupFailure(source, throwable)
         );
-        List<Text> lines = selectionBounds == null && legacyBounds == null
-            ? runtime.lookup().describeScopedHistory(
-                worldKey,
-                center,
-                radius,
-                null,
-                minimumSeconds,
-                seconds,
-                limit,
-                0,
-                1,
-                totalPages,
-                actorNames,
-                options.excludeActorNames(),
-                actionFilter,
-                options.includeTargets(),
-                options.excludeTargets(),
-                null
-            )
-            : runtime.lookup().describeScopedHistory(
-                worldKey,
-                null,
-                null,
-                selectionBounds != null ? selectionBounds : legacyBounds,
-                minimumSeconds,
-                seconds,
-                limit,
-                0,
-                1,
-                totalPages,
-                actorNames,
-                options.excludeActorNames(),
-                actionFilter,
-                options.includeTargets(),
-                options.excludeTargets(),
-                scopeSummary
-            );
-        sendLines(source, lines);
-        sendLookupNetworkData(source, networkEvents);
-        if (totalPages > 1) {
-            source.sendFeedback(() -> buildLookupNavigation(1, totalPages), false);
-        }
         return 1;
     }
 
@@ -926,11 +1032,11 @@ public final class CoreProtectCommands {
     }
 
     private static int runPageAlias(ServerCommandSource source, FabricRuntime runtime, String input) {
-        LookupPageRequest request = parseLookupPageRequest(input);
-        if (request == null) {
+        Integer page = parseStrictPositiveCommandInteger(input);
+        if (page == null) {
             return sendPageUsage(source);
         }
-        return runLookupPage(source, runtime, request.page(), request.linesPerPage());
+        return runLookupPage(source, runtime, page, null);
     }
 
     private static int sendTeleportUsage(ServerCommandSource source) {
@@ -997,89 +1103,62 @@ public final class CoreProtectCommands {
         int linesPerPage = requestedLines == null ? previousQuery.linesPerPage() : Math.max(1, Math.min(50, requestedLines));
         LookupSessionService.LookupQuery query = previousQuery.withLinesPerPage(linesPerPage);
         runtime.lookupSessions().remember(sessionKey, query);
+        submitAsync(
+            source.getServer(),
+            () -> {
+                int total = runtime.lookup().countScopedHistory(
+                    query.worldKey(),
+                    query.center(),
+                    query.radius(),
+                    query.bounds(),
+                    query.minimumSeconds(),
+                    query.maximumSeconds(),
+                    query.actorNames(),
+                    query.excludeActorNames(),
+                    query.actionFilter(),
+                    query.includeTargets(),
+                    query.excludeTargets()
+                );
+                if (total <= 0) {
+                    return new LookupRenderResult(List.of(), List.of(), 0, Phrase.NO_RESULTS_PAGE);
+                }
 
-        int total = runtime.lookup().countScopedHistory(
-            query.worldKey(),
-            query.center(),
-            query.radius(),
-            query.bounds(),
-            query.minimumSeconds(),
-            query.maximumSeconds(),
-            query.actorNames(),
-            query.excludeActorNames(),
-            query.actionFilter(),
-            query.includeTargets(),
-            query.excludeTargets()
+                int totalPages = Math.max(1, (int) Math.ceil(total / (double) linesPerPage));
+                if (page < 1 || page > totalPages) {
+                    return new LookupRenderResult(List.of(), List.of(), totalPages, Phrase.NO_RESULTS_PAGE);
+                }
+
+                int offset = (page - 1) * linesPerPage;
+                List<StoredEventRecord> networkEvents = runtime.lookup().getScopedHistory(
+                    query.worldKey(),
+                    query.center(),
+                    query.radius(),
+                    query.bounds(),
+                    query.minimumSeconds(),
+                    query.maximumSeconds(),
+                    linesPerPage,
+                    offset,
+                    query.actorNames(),
+                    query.excludeActorNames(),
+                    query.actionFilter(),
+                    query.includeTargets(),
+                    query.excludeTargets()
+                );
+                return new LookupRenderResult(runtime.lookup().renderScopedHistory(networkEvents), networkEvents, totalPages, null);
+            },
+            result -> {
+                if (result.emptyPhrase() != null) {
+                    sendCoreProtectPhrase(source, result.emptyPhrase(), Selector.FIRST);
+                    return;
+                }
+                sendLines(source, result.lines());
+                sendLookupNetworkData(source, result.networkEvents());
+                if (result.totalPages() > 1) {
+                    source.sendFeedback(() -> buildLookupNavigation(page, result.totalPages()), false);
+                }
+            },
+            throwable -> handleLookupFailure(source, throwable)
         );
-        if (total <= 0) {
-            sendCoreProtectPhrase(source, Phrase.NO_RESULTS_PAGE, Selector.FIRST);
-            return 0;
-        }
-
-        int totalPages = Math.max(1, (int) Math.ceil(total / (double) linesPerPage));
-        if (page < 1 || page > totalPages) {
-            sendCoreProtectPhrase(source, Phrase.NO_RESULTS_PAGE, Selector.FIRST);
-            return 0;
-        }
-
-        int offset = (page - 1) * linesPerPage;
-        List<StoredEventRecord> networkEvents = runtime.lookup().getScopedHistory(
-            query.worldKey(),
-            query.center(),
-            query.radius(),
-            query.bounds(),
-            query.minimumSeconds(),
-            query.maximumSeconds(),
-            linesPerPage,
-            offset,
-            query.actorNames(),
-            query.excludeActorNames(),
-            query.actionFilter(),
-            query.includeTargets(),
-            query.excludeTargets()
-        );
-        List<Text> lines = query.bounds() == null
-            ? runtime.lookup().describeScopedHistory(
-                query.worldKey(),
-                query.center(),
-                query.radius(),
-                null,
-                query.minimumSeconds(),
-                query.maximumSeconds(),
-                linesPerPage,
-                offset,
-                page,
-                totalPages,
-                query.actorNames(),
-                query.excludeActorNames(),
-                query.actionFilter(),
-                query.includeTargets(),
-                query.excludeTargets(),
-                null
-            )
-            : runtime.lookup().describeScopedHistory(
-                query.worldKey(),
-                null,
-                null,
-                query.bounds(),
-                query.minimumSeconds(),
-                query.maximumSeconds(),
-                linesPerPage,
-                offset,
-                page,
-                totalPages,
-                query.actorNames(),
-                query.excludeActorNames(),
-                query.actionFilter(),
-                query.includeTargets(),
-                query.excludeTargets(),
-                describeScope(query.bounds())
-            );
-        sendLines(source, lines);
-        sendLookupNetworkData(source, networkEvents);
-        if (totalPages > 1) {
-            source.sendFeedback(() -> buildLookupNavigation(page, totalPages), false);
-        }
         return 1;
     }
 
@@ -1190,6 +1269,10 @@ public final class CoreProtectCommands {
         if (!CoreProtectPermissions.canRunRollback(source, restore, true)) {
             return 0;
         }
+        if (PURGE_RUNNING.get()) {
+            sendCoreProtectPhrase(source, Phrase.PURGE_IN_PROGRESS);
+            return 0;
+        }
         ServerPlayerEntity player = source.getEntity() instanceof ServerPlayerEntity serverPlayer ? serverPlayer : null;
         if (player == null && isConsoleSource(source)) {
             sendCoreProtectPhrase(source, Phrase.GLOBAL_ROLLBACK, "r:#global", restore ? Selector.SECOND : Selector.FIRST);
@@ -1202,59 +1285,68 @@ public final class CoreProtectCommands {
         TimeWindow timeWindow = fixedTimeWindow(0, seconds);
         QueryBounds radiusBounds = player != null ? createRadiusBounds(player, radius) : createRadiusBounds(source, radius);
         List<String> actorNames = actorName == null || actorName.isBlank() ? null : List.of(actorName);
+        if (!validateRollbackUsers(source, runtime, actorNames, null)) {
+            return 0;
+        }
         String worldKey = source.getWorld().getRegistryKey().getValue().toString();
         String subject = describeRollbackSubject(worldKey, actorNames);
+        if (!beginRollbackSession(source)) {
+            return 0;
+        }
         sendCoreProtectPhrase(source, Phrase.ROLLBACK_STARTED, subject, restore ? Selector.SECOND : Selector.FIRST);
         long startedAt = System.nanoTime();
-        RollbackExecutionResult result = player != null
-            ? runtime.rollback().applyBetween(
-                player,
-                timeWindow.notBefore(),
-                timeWindow.notAfter(),
-                radiusBounds,
-                actorNames,
-                null,
-                restore,
-                actionFilter,
-                null,
-                null
-            )
-            : runtime.rollback().applyBetween(
-                source.getServer(),
-                timeWindow.notBefore(),
-                timeWindow.notAfter(),
-                null,
-                radiusBounds,
-                actorNames,
-                null,
-                restore,
-                actionFilter,
-                null,
-                null
-            );
         String scopeSummary = describeScope(source.getWorld().getRegistryKey().getValue().toString(), radius, player);
         String actorSummary = actorName == null || actorName.isBlank() ? "" : ", actor=" + actorName;
         String timeSummary = describeDuration(seconds);
-        rememberUndo(
-            source,
-            runtime,
-            new UndoSessionService.UndoOperation(
-                restore,
-                false,
-                null,
-                radiusBounds,
+        submitAsync(
+            source.getServer(),
+            () -> runtime.rollback().collectCandidatesBetween(
                 timeWindow.notBefore(),
                 timeWindow.notAfter(),
+                null,
+                radiusBounds,
                 actorNames,
                 null,
+                restore,
                 actionFilter,
                 null,
-                null,
-                describeUndoOperation(scopeSummary, timeSummary, actorSummary, "", describeActionFilters(actionFilter))
-                )
+                null
+            ),
+            candidates -> runtime.rollback().enqueuePreparedApply(
+                candidates,
+                restore,
+                radius,
+                seconds,
+                summarizeActors(actorNames),
+                result -> {
+                    rememberUndo(
+                        source,
+                        runtime,
+                        new UndoSessionService.UndoOperation(
+                            restore,
+                            false,
+                            null,
+                            radiusBounds,
+                            timeWindow.notBefore(),
+                            timeWindow.notAfter(),
+                            actorNames,
+                            null,
+                            actionFilter,
+                            null,
+                            null,
+                            describeUndoOperation(scopeSummary, timeSummary, actorSummary, "", describeActionFilters(actionFilter))
+                        )
+                    );
+                    sendRollbackOutcome(source, restore, false, subject, timeSummary, radius, null, worldKey, result.changed(), System.nanoTime() - startedAt, false);
+                    endRollbackSession(source);
+                }
+            ),
+            throwable -> {
+                handleRollbackFailure(source, throwable);
+                endRollbackSession(source);
+            }
         );
-        sendRollbackOutcome(source, restore, false, subject, timeSummary, radius, null, worldKey, result.changed(), System.nanoTime() - startedAt, false);
-        return result.changed() > 0 ? 1 : 0;
+        return 1;
     }
 
     private static int runLegacyRollback(ServerCommandSource source, FabricRuntime runtime, boolean restore, String input) {
@@ -1262,15 +1354,29 @@ public final class CoreProtectCommands {
         if (!CoreProtectPermissions.canRunRollback(source, restore, true)) {
             return 0;
         }
+        if (PURGE_RUNNING.get()) {
+            sendCoreProtectPhrase(source, Phrase.PURGE_IN_PROGRESS);
+            return 0;
+        }
         if (options.previewCancel()) {
             return runCancel(source, runtime);
         }
         List<String> actorNames = withoutActorToken(options.actorNames(), "#container");
         List<CoreProtectEventType> actionFilter = options.actionFilter();
+        if (hasContainerAction(actionFilter) && hasItemAction(actionFilter)) {
+            String invalidActor = firstHashedActor(options.actorNames());
+            if (invalidActor != null) {
+                sendCoreProtectPhrase(source, Phrase.INVALID_USERNAME, invalidActor);
+                return 0;
+            }
+        }
         ContainerContinuationContext containerContinuation = null;
         if (containsActorToken(options.actorNames(), "#container")) {
             if (!supportsContainerContinuationActions(actionFilter)) {
                 sendCoreProtectPhrase(source, Phrase.INVALID_USERNAME, "#container");
+                return 0;
+            }
+            if (!CoreProtectPermissions.canLookupContainer(source, true)) {
                 return 0;
             }
             if (options.preview()) {
@@ -1283,6 +1389,17 @@ public final class CoreProtectCommands {
                 return 0;
             }
             actionFilter = ensureActionFilter(actionFilter, CoreProtectEventType.CONTAINER_TRANSACTION);
+        }
+        if (!validateRollbackUsers(source, runtime, actorNames, options.excludeActorNames())) {
+            return 0;
+        }
+        if (options.seconds() == null) {
+            sendCoreProtectPhrase(source, Phrase.MISSING_LOOKUP_TIME, restore ? Selector.THIRD : Selector.SECOND);
+            return 0;
+        }
+        if (hasContainerAction(actionFilter) && hasItemAction(actionFilter) && (actorNames == null || actorNames.isEmpty())) {
+            sendCoreProtectPhrase(source, Phrase.MISSING_ACTION_USER);
+            return 0;
         }
         if (actionFilter != null && !actionFilter.isEmpty()) {
             boolean supported = actionFilter.stream().allMatch(RollbackService::isSupported);
@@ -1329,7 +1446,7 @@ public final class CoreProtectCommands {
         }
 
         int minimumSeconds = options.minimumSeconds() != null ? options.minimumSeconds() : 0;
-        int seconds = options.seconds() != null ? options.seconds() : DEFAULT_LOOKUP_SECONDS;
+        int seconds = options.seconds();
         Integer radius = options.radius();
         if (!validateRadiusLimit(source, runtime, radius, restore ? Selector.THIRD : Selector.SECOND)) {
             return 0;
@@ -1385,59 +1502,87 @@ public final class CoreProtectCommands {
         String subject = describeRollbackSubject(scopeBounds == null ? worldKey : scopeBounds.worldKey(), actorNames);
         String timeSummary = describeTimeWindow(minimumSeconds, seconds);
         boolean worldEditSelection = isWorldEditWorldFilter(options.worldFilter());
+        if (!beginRollbackSession(source)) {
+            return 0;
+        }
+        String scopeSummary = selectionBounds == null ? describeScope(worldKey, radius, player) : describeScope(selectionBounds);
+        String actorSummary = describeActors(actorNames, options.excludeActorNames());
+        String targetSummary = describeTargetFilters(options.includeTargets(), options.excludeTargets());
+        UUID playerUuid = player == null ? null : player.getUuid();
+        String rollbackWorldKey = worldKey;
+        QueryBounds rollbackScopeBounds = scopeBounds;
+        Integer rollbackRadius = radius;
+        List<String> rollbackExcludeActors = options.excludeActorNames();
+        List<String> rollbackIncludeTargets = options.includeTargets();
+        List<String> rollbackExcludeTargets = options.excludeTargets();
+        List<CoreProtectEventType> rollbackActionFilter = actionFilter;
 
         if (options.preview()) {
             sendCoreProtectPhrase(source, Phrase.ROLLBACK_STARTED, subject, Selector.THIRD);
             long startedAt = System.nanoTime();
-            RollbackPreviewResult preview = runtime.rollback().previewBetween(
-                player,
-                timeWindow.notBefore(),
-                timeWindow.notAfter(),
-                scopeBounds == null ? worldKey : null,
-                scopeBounds,
-                actorNames,
-                options.excludeActorNames(),
-                restore,
-                actionFilter,
-                options.includeTargets(),
-                options.excludeTargets()
-            );
-            runtime.previews().show(player, preview.blockChanges());
-            String scopeSummary = selectionBounds == null ? describeScope(worldKey, radius, player) : describeScope(selectionBounds);
-            String actorSummary = describeActors(actorNames, options.excludeActorNames());
-            String targetSummary = describeTargetFilters(options.includeTargets(), options.excludeTargets());
-            rememberUndo(
-                source,
-                runtime,
-                new UndoSessionService.UndoOperation(
-                    restore,
-                    true,
-                    scopeBounds == null ? worldKey : null,
-                    scopeBounds,
+            submitAsync(
+                source.getServer(),
+                () -> runtime.rollback().collectCandidatesBetween(
                     timeWindow.notBefore(),
                     timeWindow.notAfter(),
+                    rollbackScopeBounds == null ? rollbackWorldKey : null,
+                    rollbackScopeBounds,
                     actorNames,
-                    options.excludeActorNames(),
-                    actionFilter,
-                    options.includeTargets(),
-                    options.excludeTargets(),
-                    describeUndoOperation(scopeSummary, timeSummary, actorSummary, targetSummary, describeActionFilters(actionFilter))
-                )
+                    rollbackExcludeActors,
+                    restore,
+                    rollbackActionFilter,
+                    rollbackIncludeTargets,
+                    rollbackExcludeTargets
+                ),
+                candidates -> runtime.rollback().enqueuePreparedPreview(
+                    playerUuid,
+                    candidates,
+                    restore,
+                    preview -> {
+                        ServerPlayerEntity livePlayer = playerUuid == null ? null : source.getServer().getPlayerManager().getPlayer(playerUuid);
+                        if (livePlayer != null) {
+                            runtime.previews().show(livePlayer, preview.blockChanges());
+                        }
+                        rememberUndo(
+                            source,
+                            runtime,
+                            new UndoSessionService.UndoOperation(
+                                restore,
+                                true,
+                                rollbackScopeBounds == null ? rollbackWorldKey : null,
+                                rollbackScopeBounds,
+                                timeWindow.notBefore(),
+                                timeWindow.notAfter(),
+                                actorNames,
+                                rollbackExcludeActors,
+                                rollbackActionFilter,
+                                rollbackIncludeTargets,
+                                rollbackExcludeTargets,
+                                describeUndoOperation(scopeSummary, timeSummary, actorSummary, targetSummary, describeActionFilters(rollbackActionFilter))
+                            )
+                        );
+                        sendRollbackOutcome(
+                            source,
+                            restore,
+                            true,
+                            subject,
+                            timeSummary,
+                            rollbackRadius,
+                            worldEditSelection ? "#worldedit" : null,
+                            rollbackScopeBounds == null ? rollbackWorldKey : null,
+                            preview.matched(),
+                            System.nanoTime() - startedAt,
+                            true
+                        );
+                        endRollbackSession(source);
+                    }
+                ),
+                throwable -> {
+                    handleRollbackFailure(source, throwable);
+                    endRollbackSession(source);
+                }
             );
-            sendRollbackOutcome(
-                source,
-                restore,
-                true,
-                subject,
-                timeSummary,
-                radius,
-                worldEditSelection ? "#worldedit" : null,
-                scopeBounds == null ? worldKey : null,
-                preview.matched(),
-                System.nanoTime() - startedAt,
-                true
-            );
-            return preview.matched() > 0 ? 1 : 0;
+            return 1;
         }
 
         if (player != null) {
@@ -1445,68 +1590,67 @@ public final class CoreProtectCommands {
         }
         sendCoreProtectPhrase(source, Phrase.ROLLBACK_STARTED, subject, restore ? Selector.SECOND : Selector.FIRST);
         long startedAt = System.nanoTime();
-        RollbackExecutionResult result = player != null
-            ? runtime.rollback().applyBetween(
-                player,
+        submitAsync(
+            source.getServer(),
+            () -> runtime.rollback().collectCandidatesBetween(
                 timeWindow.notBefore(),
                 timeWindow.notAfter(),
-                scopeBounds == null ? worldKey : null,
-                scopeBounds,
+                rollbackScopeBounds == null ? rollbackWorldKey : null,
+                rollbackScopeBounds,
                 actorNames,
-                options.excludeActorNames(),
+                rollbackExcludeActors,
                 restore,
-                actionFilter,
-                options.includeTargets(),
-                options.excludeTargets()
-            )
-            : runtime.rollback().applyBetween(
-                source.getServer(),
-                timeWindow.notBefore(),
-                timeWindow.notAfter(),
-                scopeBounds == null ? worldKey : null,
-                scopeBounds,
-                actorNames,
-                options.excludeActorNames(),
+                rollbackActionFilter,
+                rollbackIncludeTargets,
+                rollbackExcludeTargets
+            ),
+            candidates -> runtime.rollback().enqueuePreparedApply(
+                candidates,
                 restore,
-                actionFilter,
-                options.includeTargets(),
-                options.excludeTargets()
-            );
-        String scopeSummary = selectionBounds == null ? describeScope(worldKey, radius, player) : describeScope(selectionBounds);
-        String actorSummary = describeActors(actorNames, options.excludeActorNames());
-        String targetSummary = describeTargetFilters(options.includeTargets(), options.excludeTargets());
-        rememberUndo(
-            source,
-            runtime,
-            new UndoSessionService.UndoOperation(
-                restore,
-                false,
-                scopeBounds == null ? worldKey : null,
-                scopeBounds,
-                timeWindow.notBefore(),
-                timeWindow.notAfter(),
-                actorNames,
-                options.excludeActorNames(),
-                actionFilter,
-                options.includeTargets(),
-                options.excludeTargets(),
-                describeUndoOperation(scopeSummary, timeSummary, actorSummary, targetSummary, describeActionFilters(actionFilter))
-                )
+                rollbackRadius == null ? -1 : rollbackRadius,
+                seconds,
+                summarizeActors(actorNames),
+                result -> {
+                    rememberUndo(
+                        source,
+                        runtime,
+                        new UndoSessionService.UndoOperation(
+                            restore,
+                            false,
+                            rollbackScopeBounds == null ? rollbackWorldKey : null,
+                            rollbackScopeBounds,
+                            timeWindow.notBefore(),
+                            timeWindow.notAfter(),
+                            actorNames,
+                            rollbackExcludeActors,
+                            rollbackActionFilter,
+                            rollbackIncludeTargets,
+                            rollbackExcludeTargets,
+                            describeUndoOperation(scopeSummary, timeSummary, actorSummary, targetSummary, describeActionFilters(rollbackActionFilter))
+                        )
+                    );
+                    sendRollbackOutcome(
+                        source,
+                        restore,
+                        false,
+                        subject,
+                        timeSummary,
+                        rollbackRadius,
+                        worldEditSelection ? "#worldedit" : null,
+                        rollbackScopeBounds == null ? rollbackWorldKey : null,
+                        result.changed(),
+                        System.nanoTime() - startedAt,
+                        false
+                    );
+                    endRollbackSession(source);
+                }
+            ),
+            throwable -> {
+                handleRollbackFailure(source, throwable);
+                endRollbackSession(source);
+            }
         );
-        sendRollbackOutcome(
-            source,
-            restore,
-            false,
-            subject,
-            timeSummary,
-            radius,
-            worldEditSelection ? "#worldedit" : null,
-            scopeBounds == null ? worldKey : null,
-            result.changed(),
-            System.nanoTime() - startedAt,
-            false
-        );
-        return result.changed() > 0 ? 1 : 0;
+        return 1;
     }
 
     private static int sendPurgeUsage(ServerCommandSource source) {
@@ -1532,32 +1676,68 @@ public final class CoreProtectCommands {
             return 0;
         }
 
+        if (!PURGE_RUNNING.compareAndSet(false, true)) {
+            sendCoreProtectPhrase(source, Phrase.PURGE_IN_PROGRESS);
+            return 0;
+        }
+
         if (runtime.database() == null) {
-            source.sendFeedback(CoreProtectCommands::notInitializedText, false);
-            return 0;
-        }
-
-        int minimumSeconds = source.getEntity() instanceof ServerPlayerEntity ? PLAYER_PURGE_MIN_SECONDS : CONSOLE_PURGE_MIN_SECONDS;
-        if (seconds < minimumSeconds) {
-            final long minimumDays = minimumSeconds / 86400L;
-            sendCoreProtectPhrase(source, Phrase.PURGE_MINIMUM_TIME, String.valueOf(minimumDays), minimumDays == 1 ? Selector.FIRST : Selector.SECOND);
-            return 0;
-        }
-
-        String worldKey = resolveWorldFilter(source, worldFilter);
-        if (worldFilter != null && worldKey == null && !isGlobalWorldFilter(worldFilter)) {
-            return 0;
-        }
-
-        int deleted = runtime.database().purgeOlderThan(seconds, worldKey, includeTargets);
-        sendCoreProtectPhrase(source, Phrase.PURGE_SUCCESS);
-        sendCoreProtectPhrase(source, Phrase.PURGE_ROWS, NumberFormat.getInstance().format(deleted), deleted == 1 ? Selector.FIRST : Selector.SECOND);
-        if (optimize) {
-            if (runtime.database().optimizeStorage()) {
-                sendCoreProtectPhrase(source, Phrase.PURGE_OPTIMIZING);
+            try {
+                source.sendFeedback(CoreProtectCommands::notInitializedText, false);
+                return 0;
+            }
+            finally {
+                PURGE_RUNNING.set(false);
             }
         }
-        return 1;
+
+        boolean restorePaused = runtime.database().writesPaused();
+        if (!restorePaused) {
+            runtime.database().setWritesPaused(true);
+        }
+
+        try {
+            int minimumSeconds = source.getEntity() instanceof ServerPlayerEntity ? PLAYER_PURGE_MIN_SECONDS : CONSOLE_PURGE_MIN_SECONDS;
+            if (seconds < minimumSeconds) {
+                final long minimumDays = minimumSeconds / 86400L;
+                sendCoreProtectPhrase(source, Phrase.PURGE_MINIMUM_TIME, String.valueOf(minimumDays), minimumDays == 1 ? Selector.FIRST : Selector.SECOND);
+                return 0;
+            }
+
+            String worldKey = resolveWorldFilter(source, worldFilter);
+            if (worldFilter != null && worldKey == null && !isGlobalWorldFilter(worldFilter)) {
+                return 0;
+            }
+
+            String purgeScope = worldKey == null ? "#global" : displayWorldName(worldKey);
+            sendCoreProtectPhrase(source, Phrase.PURGE_STARTED, purgeScope);
+            sendCoreProtectPhrase(source, Phrase.PURGE_NOTICE_1);
+            sendCoreProtectPhrase(source, Phrase.PURGE_NOTICE_2);
+            sendCoreProtectPhrase(
+                source,
+                Phrase.PURGE_PROCESSING,
+                runtime.database().databaseType() == CoreProtectFabricConfig.DatabaseType.MYSQL ? "MySQL" : "SQLite"
+            );
+
+            int deleted = runtime.database().purgeOlderThan(seconds, worldKey, includeTargets);
+            if (optimize) {
+                sendCoreProtectPhrase(source, Phrase.PURGE_OPTIMIZING);
+                runtime.database().optimizeStorage();
+            }
+
+            sendCoreProtectPhrase(source, Phrase.PURGE_SUCCESS);
+            sendCoreProtectPhrase(source, Phrase.PURGE_ROWS, NumberFormat.getInstance().format(deleted), deleted == 1 ? Selector.FIRST : Selector.SECOND);
+            return 1;
+        }
+        catch (RuntimeException exception) {
+            CoreProtectFabricMod.LOGGER.error("CoreProtect purge failed", exception);
+            sendCoreProtectPhrase(source, Phrase.PURGE_FAILED);
+            return 0;
+        }
+        finally {
+            runtime.database().setWritesPaused(restorePaused);
+            PURGE_RUNNING.set(false);
+        }
     }
 
     private static int reloadRuntime(ServerCommandSource source, FabricRuntime runtime) {
@@ -1711,14 +1891,19 @@ public final class CoreProtectCommands {
             return 1;
         }
 
+        String sessionKey = lookupSessionKey(source);
+        if (!beginRollbackSession(source)) {
+            runtime.undoSessions().remember(sessionKey, operation);
+            return 0;
+        }
         if (player != null) {
             runtime.previews().clear(player);
         }
         boolean undoRestore = !operation.restore();
         long startedAt = System.nanoTime();
-        RollbackExecutionResult result = player != null
-            ? runtime.rollback().applyBetween(
-                player,
+        submitAsync(
+            source.getServer(),
+            () -> runtime.rollback().collectCandidatesBetween(
                 operation.notBefore(),
                 operation.notAfter(),
                 operation.worldKey(),
@@ -1729,52 +1914,55 @@ public final class CoreProtectCommands {
                 operation.actionFilter(),
                 operation.includeTargets(),
                 operation.excludeTargets()
-            )
-            : runtime.rollback().applyBetween(
-                source.getServer(),
-                operation.notBefore(),
-                operation.notAfter(),
-                operation.worldKey(),
-                operation.bounds(),
-                operation.actorNames(),
-                operation.excludeActorNames(),
+            ),
+            candidates -> runtime.rollback().enqueuePreparedApply(
+                candidates,
                 undoRestore,
-                operation.actionFilter(),
-                operation.includeTargets(),
-                operation.excludeTargets()
-            );
-        rememberUndo(
-            source,
-            runtime,
-            new UndoSessionService.UndoOperation(
-                undoRestore,
-                false,
-                operation.worldKey(),
-                operation.bounds(),
-                operation.notBefore(),
-                operation.notAfter(),
-                operation.actorNames(),
-                operation.excludeActorNames(),
-                operation.actionFilter(),
-                operation.includeTargets(),
-                operation.excludeTargets(),
-                operation.description()
-            )
+                -1,
+                0,
+                summarizeActors(operation.actorNames()),
+                result -> {
+                    rememberUndo(
+                        source,
+                        runtime,
+                        new UndoSessionService.UndoOperation(
+                            undoRestore,
+                            false,
+                            operation.worldKey(),
+                            operation.bounds(),
+                            operation.notBefore(),
+                            operation.notAfter(),
+                            operation.actorNames(),
+                            operation.excludeActorNames(),
+                            operation.actionFilter(),
+                            operation.includeTargets(),
+                            operation.excludeTargets(),
+                            operation.description()
+                        )
+                    );
+                    sendRollbackOutcome(
+                        source,
+                        undoRestore,
+                        false,
+                        describeRollbackSubject(resolveUndoWorldKey(operation), operation.actorNames()),
+                        extractUndoTimeSummary(operation.description()),
+                        extractUndoRadius(operation.description()),
+                        extractUndoSelection(operation.description()),
+                        resolveUndoWorldKey(operation),
+                        result.changed(),
+                        System.nanoTime() - startedAt,
+                        false
+                    );
+                    endRollbackSession(source);
+                }
+            ),
+            throwable -> {
+                runtime.undoSessions().remember(sessionKey, operation);
+                handleRollbackFailure(source, throwable);
+                endRollbackSession(source);
+            }
         );
-        sendRollbackOutcome(
-            source,
-            undoRestore,
-            false,
-            describeRollbackSubject(resolveUndoWorldKey(operation), operation.actorNames()),
-            extractUndoTimeSummary(operation.description()),
-            extractUndoRadius(operation.description()),
-            extractUndoSelection(operation.description()),
-            resolveUndoWorldKey(operation),
-            result.changed(),
-            System.nanoTime() - startedAt,
-            false
-        );
-        return result.changed() > 0 ? 1 : 0;
+        return 1;
     }
 
     private static int runApply(ServerCommandSource source, FabricRuntime runtime) {
@@ -1785,20 +1973,23 @@ public final class CoreProtectCommands {
         ServerPlayerEntity player = source.getEntity() instanceof ServerPlayerEntity serverPlayer ? serverPlayer : null;
 
         String sessionKey = lookupSessionKey(source);
-        UndoSessionService.UndoOperation operation = runtime.undoSessions().get(sessionKey);
-        if (operation == null || !operation.preview()) {
+        UndoSessionService.UndoOperation operation = runtime.undoSessions().consumePreview(sessionKey);
+        if (operation == null) {
             sendCoreProtectPhrase(source, Phrase.NO_ROLLBACK, Selector.FIRST);
             return 0;
         }
 
+        if (!beginRollbackSession(source)) {
+            runtime.undoSessions().remember(sessionKey, operation);
+            return 0;
+        }
         if (player != null) {
             runtime.previews().clear(player);
         }
-        runtime.undoSessions().clear(sessionKey);
         long startedAt = System.nanoTime();
-        RollbackExecutionResult result = player != null
-            ? runtime.rollback().applyBetween(
-                player,
+        submitAsync(
+            source.getServer(),
+            () -> runtime.rollback().collectCandidatesBetween(
                 operation.notBefore(),
                 operation.notAfter(),
                 operation.worldKey(),
@@ -1809,54 +2000,56 @@ public final class CoreProtectCommands {
                 operation.actionFilter(),
                 operation.includeTargets(),
                 operation.excludeTargets()
-            )
-            : runtime.rollback().applyBetween(
-                source.getServer(),
-                operation.notBefore(),
-                operation.notAfter(),
-                operation.worldKey(),
-                operation.bounds(),
-                operation.actorNames(),
-                operation.excludeActorNames(),
+            ),
+            candidates -> runtime.rollback().enqueuePreparedApply(
+                candidates,
                 operation.restore(),
-                operation.actionFilter(),
-                operation.includeTargets(),
-                operation.excludeTargets()
-            );
+                -1,
+                0,
+                summarizeActors(operation.actorNames()),
+                result -> {
+                    rememberUndo(
+                        source,
+                        runtime,
+                        new UndoSessionService.UndoOperation(
+                            operation.restore(),
+                            false,
+                            operation.worldKey(),
+                            operation.bounds(),
+                            operation.notBefore(),
+                            operation.notAfter(),
+                            operation.actorNames(),
+                            operation.excludeActorNames(),
+                            operation.actionFilter(),
+                            operation.includeTargets(),
+                            operation.excludeTargets(),
+                            operation.description()
+                        )
+                    );
 
-        rememberUndo(
-            source,
-            runtime,
-            new UndoSessionService.UndoOperation(
-                operation.restore(),
-                false,
-                operation.worldKey(),
-                operation.bounds(),
-                operation.notBefore(),
-                operation.notAfter(),
-                operation.actorNames(),
-                operation.excludeActorNames(),
-                operation.actionFilter(),
-                operation.includeTargets(),
-                operation.excludeTargets(),
-                operation.description()
-            )
+                    sendRollbackOutcome(
+                        source,
+                        operation.restore(),
+                        false,
+                        describeRollbackSubject(resolveUndoWorldKey(operation), operation.actorNames()),
+                        extractUndoTimeSummary(operation.description()),
+                        extractUndoRadius(operation.description()),
+                        extractUndoSelection(operation.description()),
+                        resolveUndoWorldKey(operation),
+                        result.changed(),
+                        System.nanoTime() - startedAt,
+                        false
+                    );
+                    endRollbackSession(source);
+                }
+            ),
+            throwable -> {
+                runtime.undoSessions().remember(sessionKey, operation);
+                handleRollbackFailure(source, throwable);
+                endRollbackSession(source);
+            }
         );
-
-        sendRollbackOutcome(
-            source,
-            operation.restore(),
-            false,
-            describeRollbackSubject(resolveUndoWorldKey(operation), operation.actorNames()),
-            extractUndoTimeSummary(operation.description()),
-            extractUndoRadius(operation.description()),
-            extractUndoSelection(operation.description()),
-            resolveUndoWorldKey(operation),
-            result.changed(),
-            System.nanoTime() - startedAt,
-            false
-        );
-        return result.changed() > 0 ? 1 : 0;
+        return 1;
     }
 
     private static int runCancel(ServerCommandSource source, FabricRuntime runtime) {
@@ -1867,8 +2060,8 @@ public final class CoreProtectCommands {
         ServerPlayerEntity player = source.getEntity() instanceof ServerPlayerEntity serverPlayer ? serverPlayer : null;
 
         String sessionKey = lookupSessionKey(source);
-        UndoSessionService.UndoOperation operation = runtime.undoSessions().get(sessionKey);
-        if (operation == null || !operation.preview()) {
+        UndoSessionService.UndoOperation operation = runtime.undoSessions().consumePreview(sessionKey);
+        if (operation == null) {
             sendCoreProtectPhrase(source, Phrase.NO_ROLLBACK, Selector.FIRST);
             return 0;
         }
@@ -1876,7 +2069,6 @@ public final class CoreProtectCommands {
         if (player != null) {
             runtime.previews().clear(player);
         }
-        runtime.undoSessions().clear(sessionKey);
         sendCoreProtectPhrase(source, Phrase.PREVIEW_CANCELLING);
         sendCoreProtectPhrase(source, Phrase.PREVIEW_CANCELLED);
         return 1;
@@ -1971,6 +2163,57 @@ public final class CoreProtectCommands {
 
     private static boolean hasContainerAction(List<CoreProtectEventType> actionFilter) {
         return actionFilter != null && actionFilter.contains(CoreProtectEventType.CONTAINER_TRANSACTION);
+    }
+
+    private static boolean hasItemAction(List<CoreProtectEventType> actionFilter) {
+        if (actionFilter == null || actionFilter.isEmpty()) {
+            return false;
+        }
+        for (CoreProtectEventType eventType : actionFilter) {
+            if (eventType == CoreProtectEventType.ITEM_PICKUP
+                || eventType == CoreProtectEventType.ITEM_DROP
+                || eventType == CoreProtectEventType.ITEM_THROW
+                || eventType == CoreProtectEventType.ITEM_SHOOT
+                || eventType == CoreProtectEventType.ITEM_BUY
+                || eventType == CoreProtectEventType.ITEM_SELL
+                || eventType == CoreProtectEventType.ITEM_CREATE
+                || eventType == CoreProtectEventType.ITEM_DESTROY) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasActorOnlyLookupAction(List<CoreProtectEventType> actionFilter) {
+        if (actionFilter == null || actionFilter.isEmpty()) {
+            return false;
+        }
+        for (CoreProtectEventType eventType : actionFilter) {
+            if (eventType == CoreProtectEventType.PLAYER_CHAT
+                || eventType == CoreProtectEventType.PLAYER_COMMAND
+                || eventType == CoreProtectEventType.PLAYER_JOIN
+                || eventType == CoreProtectEventType.PLAYER_QUIT
+                || eventType == CoreProtectEventType.USERNAME_CHANGE) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsUsernameLookupAction(List<CoreProtectEventType> actionFilter) {
+        return actionFilter != null && actionFilter.contains(CoreProtectEventType.USERNAME_CHANGE);
+    }
+
+    private static String firstHashedActor(List<String> actorNames) {
+        if (actorNames == null || actorNames.isEmpty()) {
+            return null;
+        }
+        for (String actorName : actorNames) {
+            if (actorName != null && actorName.startsWith("#")) {
+                return actorName;
+            }
+        }
+        return null;
     }
 
     private static boolean containsTargetIdentifier(List<String> targets, String expected) {
@@ -2075,6 +2318,27 @@ public final class CoreProtectCommands {
         if (promptSelection) {
             sendCoreProtectPhrase(source, Phrase.PLEASE_SELECT, "/co apply", "/co cancel");
         }
+    }
+
+    private static boolean beginRollbackSession(ServerCommandSource source) {
+        String sessionKey = rollbackSessionKey(source);
+        if (ACTIVE_ROLLBACK_SESSIONS.add(sessionKey)) {
+            return true;
+        }
+        sendCoreProtectPhrase(source, Phrase.ROLLBACK_IN_PROGRESS);
+        return false;
+    }
+
+    private static void endRollbackSession(ServerCommandSource source) {
+        ACTIVE_ROLLBACK_SESSIONS.remove(rollbackSessionKey(source));
+    }
+
+    private static String rollbackSessionKey(ServerCommandSource source) {
+        String sessionKey = lookupSessionKey(source);
+        if (sessionKey == null || sessionKey.isBlank()) {
+            return "rollback:unknown";
+        }
+        return sessionKey;
     }
 
     private static String describeScope(QueryBounds bounds) {
@@ -2184,6 +2448,13 @@ public final class CoreProtectCommands {
             builder.append(", exclude-user=").append(String.join(",", excludeActorNames));
         }
         return builder.toString();
+    }
+
+    private static String summarizeActors(List<String> actorNames) {
+        if (actorNames == null || actorNames.isEmpty()) {
+            return null;
+        }
+        return String.join(",", actorNames);
     }
 
     private static String describeActionFilters(List<CoreProtectEventType> actionFilter) {
@@ -2358,6 +2629,133 @@ public final class CoreProtectCommands {
         return filtered.isEmpty() ? null : filtered;
     }
 
+    private static boolean validateRollbackUsers(
+        ServerCommandSource source,
+        FabricRuntime runtime,
+        List<String> actorNames,
+        List<String> excludeActorNames
+    ) {
+        if (runtime == null || runtime.database() == null) {
+            return true;
+        }
+
+        String missingActor = findMissingRollbackActor(runtime, actorNames);
+        if (missingActor != null) {
+            sendCoreProtectPhrase(source, Phrase.USER_NOT_FOUND, missingActor);
+            return false;
+        }
+
+        String missingExcludedActor = findMissingRollbackExcludedActor(runtime, excludeActorNames);
+        if (missingExcludedActor != null) {
+            sendCoreProtectPhrase(source, Phrase.USER_NOT_FOUND, missingExcludedActor);
+            return false;
+        }
+        return true;
+    }
+
+    private static boolean validateLookupUsers(
+        ServerCommandSource source,
+        FabricRuntime runtime,
+        List<String> actorNames,
+        List<String> excludeActorNames
+    ) {
+        if (runtime == null || runtime.database() == null) {
+            return true;
+        }
+
+        String missingActor = findMissingLookupActor(runtime, actorNames);
+        if (missingActor != null) {
+            sendCoreProtectPhrase(source, Phrase.USER_NOT_FOUND, missingActor);
+            return false;
+        }
+
+        String missingExcludedActor = findMissingLookupExcludedActor(runtime, excludeActorNames);
+        if (missingExcludedActor != null) {
+            sendCoreProtectPhrase(source, Phrase.USER_NOT_FOUND, missingExcludedActor);
+            return false;
+        }
+        return true;
+    }
+
+    private static String findMissingRollbackActor(FabricRuntime runtime, List<String> actorNames) {
+        if (actorNames == null || actorNames.isEmpty()) {
+            return null;
+        }
+
+        for (String actorName : actorNames) {
+            if (actorName == null || actorName.isBlank()) {
+                continue;
+            }
+            if ("#global".equalsIgnoreCase(actorName) || "#container".equalsIgnoreCase(actorName)) {
+                continue;
+            }
+            if (!runtime.database().actorExists(actorName)) {
+                return actorName;
+            }
+        }
+        return null;
+    }
+
+    private static String findMissingLookupActor(FabricRuntime runtime, List<String> actorNames) {
+        if (actorNames == null || actorNames.isEmpty()) {
+            return null;
+        }
+
+        for (String actorName : actorNames) {
+            if (actorName == null || actorName.isBlank()) {
+                continue;
+            }
+            if ("#global".equalsIgnoreCase(actorName) || "#container".equalsIgnoreCase(actorName)) {
+                continue;
+            }
+            if (!runtime.database().actorExists(actorName)) {
+                return actorName;
+            }
+        }
+        return null;
+    }
+
+    private static String findMissingRollbackExcludedActor(FabricRuntime runtime, List<String> excludeActorNames) {
+        if (excludeActorNames == null || excludeActorNames.isEmpty()) {
+            return null;
+        }
+
+        for (String actorName : excludeActorNames) {
+            if (actorName == null || actorName.isBlank()) {
+                continue;
+            }
+            if ("#hopper".equalsIgnoreCase(actorName)) {
+                continue;
+            }
+            if ("#global".equalsIgnoreCase(actorName)) {
+                return actorName;
+            }
+            if (!runtime.database().actorExists(actorName)) {
+                return actorName;
+            }
+        }
+        return null;
+    }
+
+    private static String findMissingLookupExcludedActor(FabricRuntime runtime, List<String> excludeActorNames) {
+        if (excludeActorNames == null || excludeActorNames.isEmpty()) {
+            return null;
+        }
+
+        for (String actorName : excludeActorNames) {
+            if (actorName == null || actorName.isBlank()) {
+                continue;
+            }
+            if ("#global".equalsIgnoreCase(actorName)) {
+                return actorName;
+            }
+            if (!runtime.database().actorExists(actorName)) {
+                return actorName;
+            }
+        }
+        return null;
+    }
+
     private static List<CoreProtectEventType> ensureActionFilter(List<CoreProtectEventType> actionFilter, CoreProtectEventType requiredType) {
         List<CoreProtectEventType> resolved = actionFilter == null ? new ArrayList<>() : new ArrayList<>(actionFilter);
         if (requiredType != null && !resolved.contains(requiredType)) {
@@ -2449,19 +2847,57 @@ public final class CoreProtectCommands {
         if (parts.length == 0 || parts.length > 2) {
             return null;
         }
-        if (!parts[0].matches("\\d+")) {
+
+        Integer page = parsePositiveCommandInteger(parts[0]);
+        if (page == null) {
+            return null;
+        }
+        Integer linesPerPage = null;
+        if (parts.length == 2) {
+            linesPerPage = parsePositiveCommandInteger(parts[1]);
+            if (linesPerPage == null) {
+                return null;
+            }
+        }
+        return new LookupPageRequest(page, linesPerPage);
+    }
+
+    private static Integer parsePositiveCommandInteger(String input) {
+        if (input == null) {
             return null;
         }
 
-        int page = Integer.parseInt(parts[0]);
-        Integer linesPerPage = null;
-        if (parts.length == 2) {
-            if (!parts[1].matches("\\d+")) {
-                return null;
-            }
-            linesPerPage = Integer.parseInt(parts[1]);
+        String cleaned = input.trim().replaceAll("[^0-9]", "");
+        if (cleaned.isBlank() || cleaned.length() >= 10) {
+            return null;
         }
-        return new LookupPageRequest(page, linesPerPage);
+
+        try {
+            int value = Integer.parseInt(cleaned);
+            return value > 0 ? value : null;
+        }
+        catch (NumberFormatException exception) {
+            return null;
+        }
+    }
+
+    private static Integer parseStrictPositiveCommandInteger(String input) {
+        if (input == null) {
+            return null;
+        }
+
+        String cleaned = input.trim();
+        if (cleaned.isBlank() || cleaned.length() >= 10 || !cleaned.equals(cleaned.replaceAll("[^0-9]", ""))) {
+            return null;
+        }
+
+        try {
+            int value = Integer.parseInt(cleaned);
+            return value > 0 ? value : null;
+        }
+        catch (NumberFormatException exception) {
+            return null;
+        }
     }
 
     private static TeleportRequest parseTeleportRequest(ServerCommandSource source, ServerPlayerEntity player, String input) {
@@ -2545,8 +2981,18 @@ public final class CoreProtectCommands {
             return null;
         }
 
+        String cleaned = input.trim().replaceAll("[^0-9.\\-]", "");
+        if (cleaned.isBlank() || cleaned.length() >= 12) {
+            return null;
+        }
+
+        String symbolOnly = cleaned.replaceAll("[^.\\-]", "");
+        if (cleaned.equals(symbolOnly)) {
+            return null;
+        }
+
         try {
-            return Double.parseDouble(input);
+            return Double.parseDouble(cleaned);
         }
         catch (NumberFormatException exception) {
             return null;
@@ -2570,6 +3016,10 @@ public final class CoreProtectCommands {
     private static void sendLookupNetworkData(ServerCommandSource source, List<StoredEventRecord> events) {
         LookupNetworkingService.send(source, events);
     }
+
+    private record LookupRenderResult(List<Text> lines, List<StoredEventRecord> networkEvents, int totalPages, Phrase emptyPhrase) {
+    }
+
     private static String lookupSessionKey(ServerCommandSource source) {
         if (source.getEntity() instanceof ServerPlayerEntity player) {
             return player.getUuidAsString();
@@ -2712,8 +3162,26 @@ public final class CoreProtectCommands {
             return 0;
         }
 
-        sendLines(source, runtime.lookup().describeTargetedBlockHistory(player, limit, eventTypes, title, emptyMessage));
-        LookupNetworkingService.send(source, runtime.lookup().getTargetedBlockHistory(player, limit, eventTypes));
+        BlockPos targetPos = runtime.lookup().findTargetedBlockPos(player);
+        if (targetPos == null) {
+            sendCoreProtectPhrase(source, Phrase.NO_DATA_LOCATION, Selector.FIRST);
+            return 0;
+        }
+
+        String worldKey = ((ServerWorld) player.getEntityWorld()).getRegistryKey().getValue().toString();
+        submitAsync(
+            source.getServer(),
+            () -> {
+                List<StoredEventRecord> events = runtime.lookup().loadBlockHistory(worldKey, targetPos, limit, eventTypes);
+                List<Text> lines = runtime.lookup().renderBlockHistory(worldKey, targetPos, events, title, emptyMessage);
+                return new LookupRenderResult(lines, events, 1, null);
+            },
+            result -> {
+                sendLines(source, result.lines());
+                sendLookupNetworkData(source, result.networkEvents());
+            },
+            throwable -> handleLookupFailure(source, throwable)
+        );
         return 1;
     }
 

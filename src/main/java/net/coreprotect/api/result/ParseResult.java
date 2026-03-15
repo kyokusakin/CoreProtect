@@ -78,7 +78,7 @@ public class ParseResult {
     }
 
     public String getWorldKey() {
-        return delegate.worldName();
+        return delegate.getWorldKey();
     }
 
     public boolean hasPosition() {

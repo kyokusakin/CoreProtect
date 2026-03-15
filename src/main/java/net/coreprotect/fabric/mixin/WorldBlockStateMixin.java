@@ -65,20 +65,15 @@ public abstract class WorldBlockStateMixin {
 
     @Inject(method = "removeBlock(Lnet/minecraft/util/math/BlockPos;Z)Z", at = @At("HEAD"))
     private void coreprotect$captureRemoveBlock(BlockPos pos, boolean move, CallbackInfoReturnable<Boolean> cir) {
-        String actor = StructureGrowContext.currentActor();
-        if (actor == null || actor.isBlank()) {
-            actor = NaturalSpreadContext.currentActor();
+        if (!((Object) this instanceof ServerWorld serverWorld)) {
+            return;
         }
-        if (actor == null || actor.isBlank()) {
-            actor = EntityBlockChangeContext.currentActor();
+        if (!coreprotect$hasTrackedContext()) {
+            return;
         }
-        if ((actor == null || actor.isBlank()) && BonemealFertilizeContext.isActive()) {
-            actor = "#bonemeal";
-        }
-        if ((actor == null || actor.isBlank()) && PortalCreateContext.isActive()) {
-            actor = "#portal";
-        }
-        if (actor == null || actor.isBlank() || !((Object) this instanceof ServerWorld serverWorld)) {
+
+        String actor = coreprotect$resolveActor();
+        if (actor == null) {
             return;
         }
 
@@ -101,12 +96,14 @@ public abstract class WorldBlockStateMixin {
             return;
         }
 
+        BlockState currentState = pendingRemoval.world().getBlockState(pendingRemoval.pos());
+
         if (BonemealFertilizeContext.isActive()) {
             BonemealFertilizeContext.recordChange(
                 pendingRemoval.world(),
                 pendingRemoval.pos(),
                 pendingRemoval.previousState(),
-                pendingRemoval.world().getBlockState(pendingRemoval.pos())
+                currentState
             );
             return;
         }
@@ -117,7 +114,7 @@ public abstract class WorldBlockStateMixin {
                 pendingRemoval.world(),
                 pendingRemoval.pos(),
                 pendingRemoval.previousState(),
-                pendingRemoval.world().getBlockState(pendingRemoval.pos())
+                currentState
             );
             return;
         }
@@ -127,7 +124,7 @@ public abstract class WorldBlockStateMixin {
                 pendingRemoval.world(),
                 pendingRemoval.pos(),
                 pendingRemoval.previousState(),
-                pendingRemoval.world().getBlockState(pendingRemoval.pos())
+                currentState
             );
             return;
         }
@@ -137,7 +134,7 @@ public abstract class WorldBlockStateMixin {
                 pendingRemoval.world(),
                 pendingRemoval.pos(),
                 pendingRemoval.previousState(),
-                pendingRemoval.world().getBlockState(pendingRemoval.pos())
+                currentState
             );
             return;
         }
@@ -172,6 +169,32 @@ public abstract class WorldBlockStateMixin {
 
     @Unique
     private void capturePendingChange(BlockPos pos) {
+        if (!((Object) this instanceof ServerWorld serverWorld)) {
+            return;
+        }
+        if (!coreprotect$hasTrackedContext()) {
+            return;
+        }
+
+        String actor = coreprotect$resolveActor();
+        if (actor == null) {
+            return;
+        }
+
+        coreprotect$pendingChanges.get().push(new PendingChange(actor, serverWorld, pos.toImmutable(), serverWorld.getBlockState(pos)));
+    }
+
+    @Unique
+    private boolean coreprotect$hasTrackedContext() {
+        return StructureGrowContext.isActive()
+            || NaturalSpreadContext.isActive()
+            || EntityBlockChangeContext.isActive()
+            || BonemealFertilizeContext.isActive()
+            || PortalCreateContext.isActive();
+    }
+
+    @Unique
+    private String coreprotect$resolveActor() {
         String actor = StructureGrowContext.currentActor();
         if (actor == null || actor.isBlank()) {
             actor = NaturalSpreadContext.currentActor();
@@ -185,11 +208,7 @@ public abstract class WorldBlockStateMixin {
         if ((actor == null || actor.isBlank()) && PortalCreateContext.isActive()) {
             actor = "#portal";
         }
-        if (actor == null || actor.isBlank() || !((Object) this instanceof ServerWorld serverWorld)) {
-            return;
-        }
-
-        coreprotect$pendingChanges.get().push(new PendingChange(actor, serverWorld, pos.toImmutable(), serverWorld.getBlockState(pos)));
+        return actor == null || actor.isBlank() ? null : actor;
     }
 
     @Unique

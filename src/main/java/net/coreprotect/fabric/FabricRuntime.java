@@ -30,7 +30,6 @@ public final class FabricRuntime {
     private static final String WORLDEDIT_SELECTION_BRIDGE_CLASS = "net.coreprotect.fabric.integration.worldedit.WorldEditSelectionBridge";
     private static final String CONFIG_FILE_NAME = "coreprotect-fabric.properties";
     private static final String BLACKLIST_FILE_NAME = "blacklist.txt";
-    private static final String UNDO_STATE_FILE_NAME = "undo-sessions.bin";
 
     private final Logger logger;
     private final Path rootDirectory;
@@ -76,7 +75,7 @@ public final class FabricRuntime {
             lookupService = new LookupService(database);
             lookupSessionService = new LookupSessionService();
             previewService = new PreviewService();
-            undoSessionService = new UndoSessionService(rootDirectory.resolve(UNDO_STATE_FILE_NAME), logger);
+            undoSessionService = new UndoSessionService();
             inspectorService = new InspectorService(lookupService);
             rollbackService = new RollbackService(database, worldConfigs, logger);
             updateCheckService = new UpdateCheckService(logger);
@@ -142,7 +141,7 @@ public final class FabricRuntime {
             lookupService = new LookupService(newDatabase);
             lookupSessionService = new LookupSessionService();
             previewService = new PreviewService();
-            undoSessionService = new UndoSessionService(rootDirectory.resolve(UNDO_STATE_FILE_NAME), logger);
+            undoSessionService = new UndoSessionService();
             inspectorService = new InspectorService(lookupService);
             rollbackService = new RollbackService(newDatabase, newWorldConfigs, logger);
             updateCheckService = new UpdateCheckService(logger);

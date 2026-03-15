@@ -16,12 +16,8 @@ public final class BlockInspector {
     private static final List<CoreProtectEventType> LEFT_CLICK_EVENT_TYPES = List.of(
         CoreProtectEventType.BLOCK_BREAK,
         CoreProtectEventType.BLOCK_PLACE,
-        CoreProtectEventType.BLOCK_USE,
         CoreProtectEventType.ENTITY_PLACE,
-        CoreProtectEventType.ENTITY_BREAK,
-        CoreProtectEventType.ENTITY_USE,
-        CoreProtectEventType.ENTITY_KILL,
-        CoreProtectEventType.SIGN_CHANGE
+        CoreProtectEventType.ENTITY_BREAK
     );
 
     private final LookupService lookupService;

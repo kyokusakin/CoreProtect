@@ -23,6 +23,9 @@ public abstract class ExplosionImplMixin {
 
     @Inject(method = "destroyBlocks", at = @At("HEAD"))
     private void coreprotect$logExplosionBlocks(List<BlockPos> blocks, CallbackInfo ci) {
+        if (blocks == null || blocks.isEmpty()) {
+            return;
+        }
         EntityExplodeListener.logExplosion(getWorld(), getEntity(), blocks);
     }
 }

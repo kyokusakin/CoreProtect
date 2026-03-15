@@ -30,4 +30,8 @@ public final class NaturalSpreadContext {
         Deque<String> actors = ACTORS.get();
         return actors.isEmpty() ? null : actors.peek();
     }
+
+    public static boolean isActive() {
+        return currentActor() != null;
+    }
 }

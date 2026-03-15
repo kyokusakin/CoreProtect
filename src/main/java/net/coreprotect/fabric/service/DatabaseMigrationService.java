@@ -29,6 +29,8 @@ public final class DatabaseMigrationService {
         boolean switched = false;
         long copied = 0L;
         long lastCopiedId = 0L;
+        long copiedPending = 0L;
+        long lastPendingCopiedId = 0L;
         long nextProgressAt = System.currentTimeMillis() + PROGRESS_INTERVAL_MS;
 
         try {
@@ -36,7 +38,8 @@ public final class DatabaseMigrationService {
             targetDatabase.start();
 
             long targetRows = targetDatabase.countAllEvents();
-            if (targetRows > 0L) {
+            long targetPendingRows = targetDatabase.countAllPendingInventoryRollbacks();
+            if (targetRows > 0L || targetPendingRows > 0L) {
                 throw userFacing(
                     "fabric.migrate.target_not_empty",
                     "Target database is not empty. Wipe the target database before running /co migrate-db again."
@@ -44,8 +47,9 @@ public final class DatabaseMigrationService {
             }
 
             long estimatedRows = sourceDatabase.countAllEvents();
+            long estimatedPendingRows = sourceDatabase.countAllPendingInventoryRollbacks();
             send(source, "fabric.migrate.started", "CoreProtect migration started: {0} -> {1}", sourceDatabase.databaseDescription(), targetDatabase.databaseDescription());
-            send(source, "fabric.migrate.scanning", "Scanning source database... rows={0}", estimatedRows);
+            send(source, "fabric.migrate.scanning", "Scanning source database... rows={0}, pending-rollbacks={1}", estimatedRows, estimatedPendingRows);
 
             while (true) {
                 List<StoredEventRecord> batch = sourceDatabase.fetchEventsAfterId(lastCopiedId, BATCH_SIZE);
@@ -57,6 +61,17 @@ public final class DatabaseMigrationService {
                 copied += batch.size();
                 lastCopiedId = batch.get(batch.size() - 1).id();
                 nextProgressAt = maybeReportProgress(source, copied, estimatedRows, nextProgressAt);
+            }
+
+            while (true) {
+                var batch = sourceDatabase.fetchPendingInventoryRollbacksAfterId(lastPendingCopiedId, BATCH_SIZE);
+                if (batch.isEmpty()) {
+                    break;
+                }
+
+                targetDatabase.importPendingInventoryRollbacks(batch);
+                copiedPending += batch.size();
+                lastPendingCopiedId = batch.get(batch.size() - 1).id();
             }
 
             runtime.logger().beginCutoverBuffering();
@@ -74,13 +89,33 @@ public final class DatabaseMigrationService {
                 lastCopiedId = batch.get(batch.size() - 1).id();
             }
 
+            while (true) {
+                var batch = sourceDatabase.fetchPendingInventoryRollbacksAfterId(lastPendingCopiedId, BATCH_SIZE);
+                if (batch.isEmpty()) {
+                    break;
+                }
+
+                targetDatabase.importPendingInventoryRollbacks(batch);
+                copiedPending += batch.size();
+                lastPendingCopiedId = batch.get(batch.size() - 1).id();
+            }
+
             long verifiedSourceRows = sourceDatabase.countAllEvents();
+            long verifiedSourcePendingRows = sourceDatabase.countAllPendingInventoryRollbacks();
             if (copied != verifiedSourceRows) {
                 throw userFacing(
                     "fabric.migrate.verification_failed",
                     "Migration verification failed. Source rows={0}, copied rows={1}.",
                     verifiedSourceRows,
                     copied
+                );
+            }
+            if (copiedPending != verifiedSourcePendingRows) {
+                throw userFacing(
+                    "fabric.migrate.verification_failed_pending",
+                    "Migration verification failed for pending inventory rollbacks. Source rows={0}, copied rows={1}.",
+                    verifiedSourcePendingRows,
+                    copiedPending
                 );
             }
 
@@ -94,12 +129,13 @@ public final class DatabaseMigrationService {
             send(
                 source,
                 "fabric.migrate.complete",
-                "CoreProtect migration complete: rows={0}, buffered-cutover-writes={1}, active-db={2}",
+                "CoreProtect migration complete: rows={0}, pending-rollbacks={1}, buffered-cutover-writes={2}, active-db={3}",
                 copied,
+                copiedPending,
                 bufferedWrites,
                 runtime.database().databaseDescription()
             );
-            return new MigrationResult(copied, bufferedWrites);
+            return new MigrationResult(copied, copiedPending, bufferedWrites);
         }
         catch (RuntimeException | IOException exception) {
             if (cutoverBuffering && !switched) {
@@ -167,6 +203,6 @@ public final class DatabaseMigrationService {
         }
     }
 
-    public record MigrationResult(long copiedRows, int bufferedWrites) {
+    public record MigrationResult(long copiedRows, long copiedPendingRollbacks, int bufferedWrites) {
     }
 }

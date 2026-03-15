@@ -16,10 +16,12 @@ import net.minecraft.block.entity.ChiseledBookshelfBlockEntity;
 import net.minecraft.block.entity.DecoratedPotBlockEntity;
 import net.minecraft.block.entity.JukeboxBlockEntity;
 import net.minecraft.block.entity.LecternBlockEntity;
+import net.minecraft.block.enums.BedPart;
 import net.minecraft.entity.Entity;
 import net.coreprotect.fabric.permission.CoreProtectPermissions;
 import net.minecraft.inventory.Inventory;
 import net.minecraft.registry.tag.BlockTags;
+import net.minecraft.state.property.Properties;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
@@ -90,7 +92,8 @@ public final class InspectorService {
             return true;
         }
 
-        blockInspector.performBlockLookup(player, world, pos);
+        BlockPos normalizedPos = normalizeLeftClickPos(world, pos);
+        blockInspector.performBlockLookup(player, world, normalizedPos);
         return true;
     }
 
@@ -117,7 +120,7 @@ public final class InspectorService {
         }
 
         if (isInteractionBlock(clickedState)) {
-            interactionInspector.performInteractionLookup(player, world, clickedPos);
+            interactionInspector.performInteractionLookup(player, world, normalizeInteractionPos(world, clickedPos, clickedState));
             return true;
         }
 
@@ -183,5 +186,42 @@ public final class InspectorService {
             || state.isIn(BlockTags.FENCE_GATES)
             || state.isIn(BlockTags.PRESSURE_PLATES)
             || state.getBlock() instanceof LeverBlock;
+    }
+
+    private BlockPos normalizeLeftClickPos(ServerWorld world, BlockPos pos) {
+        BlockState state = world.getBlockState(pos);
+
+        if (state.contains(Properties.BED_PART)
+            && state.get(Properties.BED_PART) == BedPart.HEAD
+            && state.contains(Properties.HORIZONTAL_FACING)) {
+            BlockPos footPos = pos.offset(state.get(Properties.HORIZONTAL_FACING).getOpposite());
+            if (world.getBlockState(footPos).isOf(state.getBlock())) {
+                return footPos;
+            }
+        }
+
+        if (state.contains(Properties.DOUBLE_BLOCK_HALF)
+            && state.get(Properties.DOUBLE_BLOCK_HALF) == net.minecraft.block.enums.DoubleBlockHalf.UPPER) {
+            BlockPos lowerPos = pos.down();
+            if (world.getBlockState(lowerPos).isOf(state.getBlock())) {
+                return lowerPos;
+            }
+        }
+
+        return pos;
+    }
+
+    private BlockPos normalizeInteractionPos(ServerWorld world, BlockPos pos, BlockState state) {
+        if (!state.isIn(BlockTags.DOORS)) {
+            return pos;
+        }
+
+        if (!state.contains(Properties.DOUBLE_BLOCK_HALF) || state.get(Properties.DOUBLE_BLOCK_HALF) != net.minecraft.block.enums.DoubleBlockHalf.UPPER) {
+            return pos;
+        }
+
+        BlockPos lowerPos = pos.down();
+        BlockState lowerState = world.getBlockState(lowerPos);
+        return lowerState.isOf(state.getBlock()) ? lowerPos : pos;
     }
 }

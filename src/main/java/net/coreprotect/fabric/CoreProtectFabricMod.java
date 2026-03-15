@@ -13,6 +13,7 @@ import net.coreprotect.fabric.util.LoggedItemData;
 import net.fabricmc.api.DedicatedServerModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.event.player.AttackEntityCallback;
@@ -63,6 +64,13 @@ public final class CoreProtectFabricMod implements DedicatedServerModInitializer
 
         ServerLifecycleEvents.SERVER_STARTED.register(this::onServerStarted);
         ServerLifecycleEvents.SERVER_STOPPING.register(this::onServerStopping);
+        ServerTickEvents.END_SERVER_TICK.register(server -> {
+            FabricRuntime currentRuntime = runtime;
+            if (currentRuntime == null || currentRuntime.rollback() == null) {
+                return;
+            }
+            currentRuntime.rollback().tick(server);
+        });
 
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
             FabricRuntime currentRuntime = runtime;
@@ -72,7 +80,22 @@ public final class CoreProtectFabricMod implements DedicatedServerModInitializer
 
             var eventLogger = currentRuntime.logger();
             if (eventLogger != null) {
-                eventLogger.logPlayerJoin(handler.player);
+                try {
+                    eventLogger.logPlayerJoin(handler.player);
+                }
+                catch (RuntimeException exception) {
+                    LOGGER.warn("Failed to log player join for {}", handler.player.getName().getString(), exception);
+                }
+            }
+
+            var rollbackService = currentRuntime.rollback();
+            if (rollbackService != null) {
+                try {
+                    rollbackService.applyPendingInventoryRollbacks(handler.player);
+                }
+                catch (RuntimeException exception) {
+                    LOGGER.warn("Failed to apply pending inventory rollbacks for {}", handler.player.getName().getString(), exception);
+                }
             }
         });
 
@@ -144,7 +167,7 @@ public final class CoreProtectFabricMod implements DedicatedServerModInitializer
                 ServerPlayerEntity serverPlayer = (ServerPlayerEntity) player;
                 ServerWorld serverWorld = (ServerWorld) world;
                 BlockPos clickedPos = hitResult.getBlockPos();
-                BlockPos inspectPos = clickedPos;
+                BlockPos inspectPos = clickedPos.offset(hitResult.getSide());
                 if (player.getStackInHand(hand).getItem() instanceof BlockItem) {
                     inspectPos = new ItemPlacementContext(serverPlayer, hand, player.getStackInHand(hand), hitResult).getBlockPos();
                 }

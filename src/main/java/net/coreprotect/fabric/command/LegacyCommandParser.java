@@ -207,45 +207,41 @@ public final class LegacyCommandParser {
                 continue;
             }
 
-            if (isLikelyTargetExclude(value, actionFilter)) {
-                excludeTargets.add(value);
+            ExcludeClassification classification = classifyExcludeValue(value);
+            String normalizedValue = classification.value();
+            if (normalizedValue.isBlank()) {
+                continue;
             }
-            else {
-                excludeActorNames.add(value);
+
+            if (classification.type() == ExcludeType.TARGET) {
+                addUniqueIgnoreCase(excludeTargets, normalizedValue);
+            }
+            if (classification.type() == ExcludeType.ACTOR) {
+                addUniqueIgnoreCase(excludeActorNames, normalizedValue);
             }
         }
     }
 
-    private static boolean isLikelyTargetExclude(String value, Set<CoreProtectEventType> actionFilter) {
-        String cleaned = value.trim().toLowerCase(Locale.ROOT);
+    private static ExcludeClassification classifyExcludeValue(String value) {
+        String cleaned = value.trim();
         if (cleaned.isBlank()) {
-            return false;
+            return new ExcludeClassification("", ExcludeType.ACTOR);
         }
-        if (isKnownTargetTag(cleaned)) {
-            return true;
+
+        String normalized = cleaned.toLowerCase(Locale.ROOT);
+        if (isKnownTargetTag(normalized) || looksLikeRegisteredIdentifier(normalized)) {
+            return new ExcludeClassification(cleaned, ExcludeType.TARGET);
         }
-        if (looksLikeRegisteredIdentifier(cleaned)) {
-            return true;
-        }
-        if (actionFilter == null || actionFilter.isEmpty()) {
-            return cleaned.contains(":");
-        }
-        boolean actorOnly = true;
-        for (CoreProtectEventType eventType : actionFilter) {
-            if (eventType == CoreProtectEventType.PLAYER_CHAT
-                || eventType == CoreProtectEventType.PLAYER_COMMAND
-                || eventType == CoreProtectEventType.PLAYER_JOIN
-                || eventType == CoreProtectEventType.PLAYER_QUIT
-                || eventType == CoreProtectEventType.USERNAME_CHANGE) {
-                continue;
+        return new ExcludeClassification(cleaned, ExcludeType.ACTOR);
+    }
+
+    private static void addUniqueIgnoreCase(List<String> values, String candidate) {
+        for (String value : values) {
+            if (value.equalsIgnoreCase(candidate)) {
+                return;
             }
-            actorOnly = false;
-            break;
         }
-        if (actorOnly) {
-            return false;
-        }
-        return cleaned.contains(":");
+        values.add(candidate);
     }
 
     private static boolean isKnownTargetTag(String value) {
@@ -304,9 +300,6 @@ public final class LegacyCommandParser {
     private static boolean looksLikeBareUser(String token) {
         String cleaned = stripTrailingComma(token);
         if (cleaned.isBlank()) {
-            return false;
-        }
-        if (cleaned.startsWith("#")) {
             return false;
         }
         if (cleaned.contains(":")) {
@@ -796,5 +789,13 @@ public final class LegacyCommandParser {
     }
 
     private record RadiusSpec(int maxRadius, Integer yRadius, int xRadius, int zRadius) {
+    }
+
+    private enum ExcludeType {
+        TARGET,
+        ACTOR
+    }
+
+    private record ExcludeClassification(String value, ExcludeType type) {
     }
 }

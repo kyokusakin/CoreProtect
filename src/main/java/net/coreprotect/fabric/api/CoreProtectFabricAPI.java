@@ -198,14 +198,27 @@ public final class CoreProtectFabricAPI {
         }
 
         public String worldName() {
+            return toLegacyWorldName(getWorldKey());
+        }
+
+        public String getWorldKey() {
             if (record != null) {
                 return record.worldKey();
             }
             return legacy.length < 13 ? (legacy.length > 5 ? legacy[5] : "") : legacy[9];
         }
 
-        public String getWorldKey() {
-            return worldName();
+        private String toLegacyWorldName(String worldKey) {
+            if (worldKey == null || worldKey.isBlank()) {
+                return "";
+            }
+
+            return switch (worldKey) {
+                case "minecraft:overworld" -> "world";
+                case "minecraft:the_nether" -> "world_nether";
+                case "minecraft:the_end" -> "world_the_end";
+                default -> worldKey;
+            };
         }
 
         private int parseInteger(String value, int fallback) {
@@ -225,6 +238,7 @@ public final class CoreProtectFabricAPI {
                 return fallback;
             }
         }
+
     }
 
     public int apiVersion() {

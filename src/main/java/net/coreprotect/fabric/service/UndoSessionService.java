@@ -5,35 +5,23 @@ import net.coreprotect.fabric.util.QueryBounds;
 import net.minecraft.util.math.BlockPos;
 import org.slf4j.Logger;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class UndoSessionService {
-    private static final int STORAGE_VERSION = 1;
-
     private final Map<String, UndoOperation> sessions = new ConcurrentHashMap<>();
-    private final Path storagePath;
-    private final Logger logger;
 
     public UndoSessionService() {
-        this(null, null);
     }
 
     public UndoSessionService(Path storagePath, Logger logger) {
-        this.storagePath = storagePath;
-        this.logger = logger;
-        load();
+        // Upstream session behavior is in-memory only.
     }
 
     public void remember(String sessionKey, UndoOperation operation) {
@@ -41,7 +29,6 @@ public final class UndoSessionService {
             return;
         }
         sessions.put(sessionKey, operation);
-        persist();
     }
 
     public UndoOperation get(String sessionKey) {
@@ -55,8 +42,20 @@ public final class UndoSessionService {
         if (sessionKey == null || sessionKey.isBlank()) {
             return null;
         }
-        UndoOperation operation = sessions.remove(sessionKey);
-        persist();
+        return sessions.remove(sessionKey);
+    }
+
+    public UndoOperation consumePreview(String sessionKey) {
+        if (sessionKey == null || sessionKey.isBlank()) {
+            return null;
+        }
+
+        UndoOperation operation = sessions.get(sessionKey);
+        if (operation == null || !operation.preview()) {
+            return null;
+        }
+
+        sessions.remove(sessionKey);
         return operation;
     }
 
@@ -65,73 +64,6 @@ public final class UndoSessionService {
             return;
         }
         sessions.remove(sessionKey);
-        persist();
-    }
-
-    private void load() {
-        if (storagePath == null || !Files.isRegularFile(storagePath)) {
-            return;
-        }
-
-        try (DataInputStream input = new DataInputStream(new BufferedInputStream(Files.newInputStream(storagePath)))) {
-            int version = input.readInt();
-            if (version != STORAGE_VERSION) {
-                logWarn("Skipping undo session load because the stored version {} is unsupported.", version, null);
-                return;
-            }
-
-            int size = input.readInt();
-            Map<String, UndoOperation> loaded = new LinkedHashMap<>();
-            for (int index = 0; index < size; index++) {
-                String sessionKey = input.readUTF();
-                UndoOperation operation = UndoOperation.read(input);
-                if (sessionKey != null && !sessionKey.isBlank() && operation != null) {
-                    loaded.put(sessionKey, operation);
-                }
-            }
-            sessions.clear();
-            sessions.putAll(loaded);
-        }
-        catch (IOException | RuntimeException exception) {
-            logWarn("Failed to load persisted undo sessions from {}", storagePath, exception);
-        }
-    }
-
-    private void persist() {
-        if (storagePath == null) {
-            return;
-        }
-
-        try {
-            if (storagePath.getParent() != null) {
-                Files.createDirectories(storagePath.getParent());
-            }
-            Path temporaryPath = storagePath.resolveSibling(storagePath.getFileName() + ".tmp");
-            try (DataOutputStream output = new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(temporaryPath)))) {
-                output.writeInt(STORAGE_VERSION);
-                output.writeInt(sessions.size());
-                for (Map.Entry<String, UndoOperation> entry : sessions.entrySet()) {
-                    output.writeUTF(entry.getKey());
-                    entry.getValue().write(output);
-                }
-            }
-            Files.move(temporaryPath, storagePath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-        }
-        catch (IOException exception) {
-            logWarn("Failed to persist undo sessions to {}", storagePath, exception);
-        }
-    }
-
-    private void logWarn(String message, Object argument, Throwable exception) {
-        if (logger == null) {
-            return;
-        }
-        if (exception == null) {
-            logger.warn(message, argument);
-        }
-        else {
-            logger.warn(message, argument, exception);
-        }
     }
 
     public static final class UndoOperation {

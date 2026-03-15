@@ -134,6 +134,21 @@ public final class LookupService {
         return getEntityHistory((ServerWorld) player.getEntityWorld(), entity, limit, eventTypes);
     }
 
+    public BlockPos findTargetedEntityHistoryPos(ServerPlayerEntity player, double distance) {
+        Entity entity = findTargetedEntity(player, distance);
+        return entity == null ? null : historyPos(entity);
+    }
+
+    public List<StoredEventRecord> loadBlockHistory(String worldKey, BlockPos pos, int limit, List<CoreProtectEventType> eventTypes) {
+        return eventTypes == null || eventTypes.isEmpty()
+            ? database.lookupBlockHistory(worldKey, pos, limit)
+            : database.lookupBlockHistory(worldKey, pos, limit, eventTypes);
+    }
+
+    public List<StoredEventRecord> loadNearbyHistory(String worldKey, BlockPos center, int radius, int seconds, int limit, String actorName, List<CoreProtectEventType> eventTypes) {
+        return database.lookupNearby(worldKey, center, radius, seconds, limit, actorName, eventTypes);
+    }
+
     public List<StoredEventRecord> getBlockHistory(ServerWorld world, BlockPos pos, int limit, List<CoreProtectEventType> eventTypes) {
         return eventTypes == null || eventTypes.isEmpty()
             ? database.lookupBlockHistory(world.getRegistryKey().getValue().toString(), pos, limit)
@@ -422,6 +437,51 @@ public final class LookupService {
         return filtered.subList(start, end);
     }
 
+    public List<Text> renderBlockHistory(String worldKey, BlockPos pos, List<StoredEventRecord> events, String title, String emptyMessage) {
+        List<Text> lines = new ArrayList<>();
+        lines.add(header(title, worldKey, pos, false));
+        if (events == null || events.isEmpty()) {
+            lines.add(Text.literal(emptyMessage).formatted(Formatting.GRAY));
+            return lines;
+        }
+
+        long now = System.currentTimeMillis();
+        for (StoredEventRecord event : events) {
+            appendFormattedEvent(lines, event, now, false);
+        }
+        return lines;
+    }
+
+    public List<Text> renderNearbyHistory(List<StoredEventRecord> events) {
+        List<Text> lines = new ArrayList<>();
+        lines.add(header(Phrase.build(Phrase.LOOKUP_HEADER, "CoreProtect")));
+        if (events == null || events.isEmpty()) {
+            lines.add(Text.literal(COMMAND_PREFIX + Phrase.build(Phrase.NO_RESULTS)).formatted(Formatting.GRAY));
+            return lines;
+        }
+
+        long now = System.currentTimeMillis();
+        for (StoredEventRecord event : events) {
+            appendFormattedEvent(lines, event, now, true);
+        }
+        return lines;
+    }
+
+    public List<Text> renderScopedHistory(List<StoredEventRecord> events) {
+        List<Text> lines = new ArrayList<>();
+        lines.add(header(Phrase.build(Phrase.LOOKUP_HEADER, "CoreProtect")));
+        if (events == null || events.isEmpty()) {
+            lines.add(Text.literal(COMMAND_PREFIX + Phrase.build(Phrase.NO_RESULTS)).formatted(Formatting.GRAY));
+            return lines;
+        }
+
+        long now = System.currentTimeMillis();
+        for (StoredEventRecord event : events) {
+            appendFormattedEvent(lines, event, now, true);
+        }
+        return lines;
+    }
+
     private List<StoredEventRecord> getExactScopedHistory(
         QueryBounds bounds,
         int minimumSeconds,
@@ -460,8 +520,12 @@ public final class LookupService {
     }
 
     private Text header(String title, ServerWorld world, BlockPos pos, boolean displayWorld) {
+        return header(title, world.getRegistryKey().getValue().toString(), pos, displayWorld);
+    }
+
+    private Text header(String title, String worldKey, BlockPos pos, boolean displayWorld) {
         MutableText header = Text.literal("----- " + title + " ----- ").formatted(Formatting.AQUA);
-        header.append(coordinateText(world.getRegistryKey().getValue().toString(), pos, displayWorld, false));
+        header.append(coordinateText(worldKey, pos, displayWorld, false));
         return header;
     }
 
