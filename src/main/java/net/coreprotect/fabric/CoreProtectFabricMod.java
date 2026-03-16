@@ -186,16 +186,14 @@ public final class CoreProtectFabricMod implements DedicatedServerModInitializer
                 }
             }
 
-            if (player.getStackInHand(hand).getItem() instanceof BlockItem) {
-                return ActionResult.PASS;
-            }
-
             if (player instanceof ServerPlayerEntity) {
                 ServerPlayerEntity serverPlayer = (ServerPlayerEntity) player;
                 ServerWorld serverWorld = (ServerWorld) world;
                 BlockPos pos = hitResult.getBlockPos();
                 runtime.containers().trackPotentialAccess(serverPlayer, serverWorld, pos, world.getBlockState(pos));
-                runtime.logger().logBlockUse(serverPlayer, serverWorld, pos, world.getBlockState(pos));
+                if (!(player.getStackInHand(hand).getItem() instanceof BlockItem)) {
+                    runtime.logger().logBlockUse(serverPlayer, serverWorld, pos, world.getBlockState(pos));
+                }
             }
             return ActionResult.PASS;
         });

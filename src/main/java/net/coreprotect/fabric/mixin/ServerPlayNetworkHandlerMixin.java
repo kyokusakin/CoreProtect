@@ -12,6 +12,7 @@ import net.minecraft.network.packet.c2s.play.ButtonClickC2SPacket;
 import net.minecraft.network.packet.c2s.play.ClickSlotC2SPacket;
 import net.minecraft.network.packet.c2s.play.CloseHandledScreenC2SPacket;
 import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
+import net.minecraft.network.packet.c2s.play.PlayerInteractBlockC2SPacket;
 import net.minecraft.network.packet.c2s.play.UpdateSignC2SPacket;
 import net.minecraft.network.packet.s2c.play.BlockUpdateS2CPacket;
 import net.minecraft.screen.LecternScreenHandler;
@@ -54,6 +55,21 @@ public abstract class ServerPlayNetworkHandlerMixin {
     private int coreprotect$lecternButtonId = Integer.MIN_VALUE;
     @Unique
     private ItemStack coreprotect$beforeLecternBook = ItemStack.EMPTY;
+
+    @Inject(method = "onPlayerInteractBlock", at = @At("HEAD"))
+    private void coreprotect$trackContainerAccess(PlayerInteractBlockC2SPacket packet, CallbackInfo ci) {
+        if (!(this.player.getEntityWorld() instanceof ServerWorld serverWorld)) {
+            return;
+        }
+
+        var runtime = CoreProtectFabricMod.getRuntime();
+        if (runtime == null || runtime.containers() == null) {
+            return;
+        }
+
+        BlockPos pos = packet.getBlockHitResult().getBlockPos();
+        runtime.containers().trackPotentialAccess(this.player, serverWorld, pos, serverWorld.getBlockState(pos));
+    }
 
     @Inject(
         method = "onPlayerAction",
