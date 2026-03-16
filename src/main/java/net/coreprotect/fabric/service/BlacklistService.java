@@ -1,7 +1,6 @@
 package net.coreprotect.fabric.service;
 
 import net.coreprotect.fabric.db.EventRecord;
-import net.coreprotect.fabric.log.CoreProtectEventType;
 
 import java.io.IOException;
 import java.nio.file.Files;

@@ -19,6 +19,7 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.WorldSavePath;
 import org.slf4j.Logger;
 
 import java.io.IOException;
@@ -35,6 +36,7 @@ public final class FabricRuntime {
     private final Path rootDirectory;
     private final Path configPath;
     private final Path blacklistPath;
+    private Path databaseRootDirectory;
     private CoreProtectFabricConfig config;
     private WorldConfigService worldConfigs;
     private BlacklistService blacklist;
@@ -68,7 +70,9 @@ public final class FabricRuntime {
             worldConfigs = WorldConfigService.load(rootDirectory, configPath);
             config = worldConfigs.globalConfig();
             blacklist = BlacklistService.load(blacklistPath);
-            database = new CoreProtectDatabase(config, rootDirectory, logger);
+            databaseRootDirectory = resolveDatabaseRootDirectory(server, config);
+            Files.createDirectories(databaseRootDirectory);
+            database = new CoreProtectDatabase(config, databaseRootDirectory, logger);
             database.start();
             containerSessionService = new ContainerSessionService();
             eventLogger = new FabricEventLogger(database, worldConfigs, blacklist, logger);
@@ -81,7 +85,7 @@ public final class FabricRuntime {
             updateCheckService = new UpdateCheckService(logger);
             updateCheckService.refreshAsync(config.checkUpdates());
             worldEditIntegration = registerOptionalWorldEditIntegration();
-            logger.info("CoreProtect initialized at {}", rootDirectory.toAbsolutePath());
+            logger.info("CoreProtect initialized at {} (database root: {})", rootDirectory.toAbsolutePath(), databaseRootDirectory.toAbsolutePath());
         }
         catch (IOException | RuntimeException exception) {
             shutdown();
@@ -99,6 +103,7 @@ public final class FabricRuntime {
         TransientLookupCache.clear();
         database.close();
         database = null;
+        databaseRootDirectory = null;
         eventLogger = null;
         lookupService = null;
         lookupSessionService = null;
@@ -126,13 +131,16 @@ public final class FabricRuntime {
             WorldConfigService newWorldConfigs = WorldConfigService.load(rootDirectory, configPath);
             CoreProtectFabricConfig newConfig = newWorldConfigs.globalConfig();
             BlacklistService newBlacklist = BlacklistService.load(blacklistPath);
-            CoreProtectDatabase newDatabase = new CoreProtectDatabase(newConfig, rootDirectory, logger);
+            Path newDatabaseRootDirectory = resolveDatabaseRootDirectory(server, newConfig);
+            Files.createDirectories(newDatabaseRootDirectory);
+            CoreProtectDatabase newDatabase = new CoreProtectDatabase(newConfig, newDatabaseRootDirectory, logger);
             newDatabase.start();
 
             closeOptionalIntegration(previousWorldEditIntegration, "WorldEdit");
             worldEditIntegration = null;
 
             config = newConfig;
+            databaseRootDirectory = newDatabaseRootDirectory;
             worldConfigs = newWorldConfigs;
             blacklist = newBlacklist;
             database = newDatabase;
@@ -149,7 +157,7 @@ public final class FabricRuntime {
             worldEditIntegration = registerOptionalWorldEditIntegration();
 
             previousDatabase.close();
-            logger.info("CoreProtect reloaded from {}", rootDirectory.toAbsolutePath());
+            logger.info("CoreProtect reloaded from {} (database root: {})", rootDirectory.toAbsolutePath(), databaseRootDirectory.toAbsolutePath());
         }
         catch (IOException | RuntimeException exception) {
             logger.error("CoreProtect failed to reload cleanly", exception);
@@ -159,6 +167,10 @@ public final class FabricRuntime {
 
     public Path rootDirectory() {
         return rootDirectory;
+    }
+
+    public Path databaseRootDirectory() {
+        return databaseRootDirectory == null ? rootDirectory : databaseRootDirectory;
     }
 
     public Path configPath() {
@@ -304,5 +316,12 @@ public final class FabricRuntime {
         catch (Exception exception) {
             logger.warn("CoreProtect failed to close {} integration cleanly", name, exception);
         }
+    }
+
+    private Path resolveDatabaseRootDirectory(MinecraftServer server, CoreProtectFabricConfig resolvedConfig) {
+        if (resolvedConfig == null || !resolvedConfig.databaseInWorld()) {
+            return rootDirectory;
+        }
+        return server.getSavePath(WorldSavePath.ROOT).resolve("coreprotect-fabric");
     }
 }

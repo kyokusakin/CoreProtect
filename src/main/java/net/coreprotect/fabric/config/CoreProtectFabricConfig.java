@@ -32,6 +32,7 @@ public final class CoreProtectFabricConfig {
 
     private final DatabaseType databaseType;
     private final String databaseFile;
+    private final boolean databaseInWorld;
     private final String mysqlHost;
     private final int mysqlPort;
     private final String mysqlDatabase;
@@ -81,6 +82,7 @@ public final class CoreProtectFabricConfig {
     public CoreProtectFabricConfig(
         DatabaseType databaseType,
         String databaseFile,
+        boolean databaseInWorld,
         String mysqlHost,
         int mysqlPort,
         String mysqlDatabase,
@@ -129,6 +131,7 @@ public final class CoreProtectFabricConfig {
     ) {
         this.databaseType = databaseType;
         this.databaseFile = databaseFile;
+        this.databaseInWorld = databaseInWorld;
         this.mysqlHost = mysqlHost;
         this.mysqlPort = mysqlPort;
         this.mysqlDatabase = mysqlDatabase;
@@ -178,6 +181,10 @@ public final class CoreProtectFabricConfig {
 
     public String databaseFile() {
         return databaseFile;
+    }
+
+    public boolean databaseInWorld() {
+        return databaseInWorld;
     }
 
     public DatabaseType databaseType() {
@@ -384,6 +391,7 @@ public final class CoreProtectFabricConfig {
         return new CoreProtectFabricConfig(
             type,
             databaseFile,
+            databaseInWorld,
             mysqlHost,
             mysqlPort,
             mysqlDatabase,
@@ -442,6 +450,7 @@ public final class CoreProtectFabricConfig {
         Properties properties = new Properties();
         properties.setProperty("database.type", databaseType.id());
         properties.setProperty("database.file", databaseFile);
+        properties.setProperty("database.in-world", Boolean.toString(databaseInWorld));
         properties.setProperty("database.mysql.host", mysqlHost);
         properties.setProperty("database.mysql.port", Integer.toString(mysqlPort));
         properties.setProperty("database.mysql.name", mysqlDatabase);
@@ -494,6 +503,7 @@ public final class CoreProtectFabricConfig {
         Properties defaults = new Properties();
         defaults.setProperty("database.type", "sqlite");
         defaults.setProperty("database.file", "coreprotect-fabric.db");
+        defaults.setProperty("database.in-world", "false");
         defaults.setProperty("database.mysql.host", "127.0.0.1");
         defaults.setProperty("database.mysql.port", "3306");
         defaults.setProperty("database.mysql.name", "coreprotect");
@@ -561,6 +571,7 @@ public final class CoreProtectFabricConfig {
         return new CoreProtectFabricConfig(
             DatabaseType.from(properties.getProperty("database.type")),
             properties.getProperty("database.file"),
+            readBoolean(properties, "database.in-world", "database.world", false),
             properties.getProperty("database.mysql.host"),
             Integer.parseInt(properties.getProperty("database.mysql.port")),
             properties.getProperty("database.mysql.name"),

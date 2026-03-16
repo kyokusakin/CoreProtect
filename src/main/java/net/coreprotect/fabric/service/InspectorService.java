@@ -1,8 +1,5 @@
 package net.coreprotect.fabric.service;
 
-import net.coreprotect.fabric.log.CoreProtectEventType;
-import net.coreprotect.language.Phrase;
-import net.coreprotect.language.Selector;
 import net.coreprotect.fabric.service.inspector.BlockInspector;
 import net.coreprotect.fabric.service.inspector.ContainerInspector;
 import net.coreprotect.fabric.service.inspector.InteractionInspector;

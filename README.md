@@ -61,7 +61,7 @@ It is intentionally isolated from the legacy platform so the codebase can evolve
 Key differences from upstream:
 
 - **Platform**: Fabric mod for Minecraft `1.21.11` / Java `21` — no Bukkit or Paper dependency.
-- **Storage**: SQLite (default) and MySQL via `config/coreprotect-fabric/coreprotect-fabric.properties`.
+- **Storage**: SQLite (default) and MySQL via `config/coreprotect-fabric/coreprotect-fabric.properties`; set `database.in-world=true` to place SQLite under the active world save folder.
 - **Build**: `.\gradlew.bat build` → `build/libs/coreprotect-fabric-v0.1.0.jar`
 - **Event hooks**: Fabric-native hooks covering block break/place, liquid flow, hoppers, pistons, explosions, entity interactions, item transactions, sign edits, WorldEdit (optional), and more — see source for full list.
 - **Commands**: Full `/co` command surface including `lookup`, `rollback`, `restore`, `undo`, `purge`, `inspect`, `near`, `tp`, `migrate-db`, `network-debug`, and `consumer`.

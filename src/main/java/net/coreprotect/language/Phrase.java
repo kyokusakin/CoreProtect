@@ -325,7 +325,7 @@ public enum Phrase {
             return "";
         }
 
-        Pattern phrasePattern = Pattern.compile("(\\{[a-zA-Z| ]+})");
+        Pattern phrasePattern = Pattern.compile("(\\{[^{}]*\\|[^{}]*})");
         Matcher patternMatch = phrasePattern.matcher(translatedPhrase);
         String match = "";
         if (patternMatch.find()) {

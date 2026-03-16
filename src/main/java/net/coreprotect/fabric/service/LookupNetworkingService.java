@@ -3,7 +3,6 @@ package net.coreprotect.fabric.service;
 import net.coreprotect.fabric.CoreProtectFabricMod;
 import net.coreprotect.fabric.db.StoredEventRecord;
 import net.coreprotect.fabric.listener.channel.PluginChannelListener;
-import net.coreprotect.fabric.log.CoreProtectEventType;
 import net.coreprotect.fabric.util.LoggedItemChange;
 import net.coreprotect.language.Phrase;
 import net.coreprotect.language.Selector;

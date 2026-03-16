@@ -1,7 +1,6 @@
 package net.coreprotect.fabric.command;
 
 import com.mojang.brigadier.CommandDispatcher;
-import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.builder.RequiredArgumentBuilder;
@@ -10,7 +9,6 @@ import net.coreprotect.fabric.FabricRuntime;
 import net.coreprotect.fabric.config.CoreProtectFabricConfig;
 import net.coreprotect.fabric.db.StoredEventRecord;
 import net.coreprotect.fabric.language.PhraseService;
-import net.coreprotect.fabric.listener.channel.PluginChannelListener;
 import net.coreprotect.fabric.log.CoreProtectEventType;
 import net.coreprotect.fabric.permission.CoreProtectPermissions;
 import net.coreprotect.language.Phrase;
@@ -18,12 +16,9 @@ import net.coreprotect.language.Selector;
 import net.coreprotect.fabric.service.DatabaseMigrationService;
 import net.coreprotect.fabric.service.LookupNetworkingService;
 import net.coreprotect.fabric.service.LookupSessionService;
-import net.coreprotect.fabric.service.RollbackPreviewResult;
-import net.coreprotect.fabric.service.RollbackExecutionResult;
 import net.coreprotect.fabric.service.RollbackService;
 import net.coreprotect.fabric.service.TeleportService;
 import net.coreprotect.fabric.service.UndoSessionService;
-import net.coreprotect.fabric.util.LoggedItemChange;
 import net.coreprotect.fabric.util.QueryBounds;
 import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.entity.BrushableBlockEntity;
@@ -48,7 +43,6 @@ import net.minecraft.util.Formatting;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
 
-import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.text.NumberFormat;
@@ -68,9 +62,7 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 public final class CoreProtectCommands {
-    private static final String COMMAND_PREFIX = "CoreProtect - ";
     private static final int DEFAULT_LOOKUP_LIMIT = 10;
-    private static final int DEFAULT_LOOKUP_RADIUS = 5;
     private static final int DEFAULT_LOOKUP_SECONDS = 3600;
     private static final int DEFAULT_ROLLBACK_RADIUS = 10;
     private static final int DEFAULT_MAX_RADIUS = 100;
@@ -114,7 +106,7 @@ public final class CoreProtectCommands {
             .then(buildPageCommand(runtime))
             .then(CommandManager.literal("near")
                 .requires(source -> CoreProtectPermissions.canLookupNearby(source, null, false))
-                .executes(context -> runLegacyLookup(context.getSource(), runtime, "r:5x5")))
+                .executes(context -> runLookup(context.getSource(), runtime, "r:5x5")))
             .then(buildTeleportCommand("teleport"))
             .then(buildTeleportCommand("tp"))
             .then(buildRollbackCommand("rollback", runtime, false))
@@ -166,23 +158,9 @@ public final class CoreProtectCommands {
                 return 0;
             })
             .then(CommandManager.argument("legacy", StringArgumentType.greedyString())
-                .executes(context -> runLegacyLookup(context.getSource(), runtime, StringArgumentType.getString(context, "legacy"))));
-        attachStructuredParameters(builder, StructuredParameterSupport.CommandKind.LOOKUP, (source, input) -> runLegacyLookup(source, runtime, input));
+                .executes(context -> runLookup(context.getSource(), runtime, StringArgumentType.getString(context, "legacy"))));
+        attachStructuredParameters(builder, StructuredParameterSupport.CommandKind.LOOKUP, (source, input) -> runLookup(source, runtime, input));
         return builder;
-    }
-
-    private static LiteralArgumentBuilder<ServerCommandSource> buildNearbyLookupCommand(String literal, FabricRuntime runtime, List<CoreProtectEventType> actionFilter) {
-        return CommandManager.literal(literal)
-            .requires(source -> CoreProtectPermissions.canLookupNearby(source, actionFilter, false))
-            .executes(context -> lookupHere(context.getSource(), runtime, DEFAULT_LOOKUP_RADIUS, DEFAULT_LOOKUP_SECONDS, DEFAULT_LOOKUP_LIMIT, null, actionFilter))
-            .then(CommandManager.argument("radius", IntegerArgumentType.integer(0, configuredMaxRadius(runtime)))
-                .executes(context -> lookupHere(context.getSource(), runtime, IntegerArgumentType.getInteger(context, "radius"), DEFAULT_LOOKUP_SECONDS, DEFAULT_LOOKUP_LIMIT, null, actionFilter))
-                .then(CommandManager.argument("seconds", IntegerArgumentType.integer(1, 604800))
-                    .executes(context -> lookupHere(context.getSource(), runtime, IntegerArgumentType.getInteger(context, "radius"), IntegerArgumentType.getInteger(context, "seconds"), DEFAULT_LOOKUP_LIMIT, null, actionFilter))
-                    .then(CommandManager.argument("limit", IntegerArgumentType.integer(1, 50))
-                        .executes(context -> lookupHere(context.getSource(), runtime, IntegerArgumentType.getInteger(context, "radius"), IntegerArgumentType.getInteger(context, "seconds"), IntegerArgumentType.getInteger(context, "limit"), null, actionFilter))
-                        .then(CommandManager.argument("player", StringArgumentType.word())
-                            .executes(context -> lookupHere(context.getSource(), runtime, IntegerArgumentType.getInteger(context, "radius"), IntegerArgumentType.getInteger(context, "seconds"), IntegerArgumentType.getInteger(context, "limit"), StringArgumentType.getString(context, "player"), actionFilter))))));
     }
 
     private static LiteralArgumentBuilder<ServerCommandSource> buildPageCommand(FabricRuntime runtime) {
@@ -213,8 +191,8 @@ public final class CoreProtectCommands {
                 return 0;
             })
             .then(CommandManager.argument("legacy", StringArgumentType.greedyString())
-                .executes(context -> runLegacyRollback(context.getSource(), runtime, restore, StringArgumentType.getString(context, "legacy"))));
-        attachStructuredParameters(builder, StructuredParameterSupport.CommandKind.ROLLBACK, (source, input) -> runLegacyRollback(source, runtime, restore, input));
+                .executes(context -> runRollback(context.getSource(), runtime, restore, StringArgumentType.getString(context, "legacy"))));
+        attachStructuredParameters(builder, StructuredParameterSupport.CommandKind.ROLLBACK, (source, input) -> runRollback(source, runtime, restore, input));
         return builder;
     }
 
@@ -223,8 +201,8 @@ public final class CoreProtectCommands {
             .requires(source -> CoreProtectPermissions.canUsePurge(source, false))
             .executes(context -> sendPurgeUsage(context.getSource()))
             .then(CommandManager.argument("legacy", StringArgumentType.greedyString())
-                .executes(context -> runLegacyPurge(context.getSource(), runtime, StringArgumentType.getString(context, "legacy"))));
-        attachStructuredParameters(builder, StructuredParameterSupport.CommandKind.PURGE, (source, input) -> runLegacyPurge(source, runtime, input));
+                .executes(context -> runPurgeFromInput(context.getSource(), runtime, StringArgumentType.getString(context, "legacy"))));
+        attachStructuredParameters(builder, StructuredParameterSupport.CommandKind.PURGE, (source, input) -> runPurgeFromInput(source, runtime, input));
         return builder;
     }
 
@@ -530,13 +508,6 @@ public final class CoreProtectCommands {
         return runtime.database().databaseType() == CoreProtectFabricConfig.DatabaseType.MYSQL ? "MySQL" : "SQLite";
     }
 
-    private static String licenseStatusLabel(FabricRuntime runtime) {
-        if (runtime.config() == null) {
-            return "unknown";
-        }
-        return hasValidDonationKey(runtime) ? "valid donation key" : "invalid donation key";
-    }
-
     private static int sendStatus(ServerCommandSource source, FabricRuntime runtime) {
         if (!CoreProtectPermissions.canUseStatus(source, true)) {
             return 0;
@@ -616,162 +587,6 @@ public final class CoreProtectCommands {
         );
     }
 
-    private static int lookupTargetedEntity(ServerCommandSource source, FabricRuntime runtime, int limit) {
-        ServerPlayerEntity player = requirePlayer(source);
-        if (player == null) {
-            return 0;
-        }
-        if (!CoreProtectPermissions.canLookupEntity(source, true)) {
-            return 0;
-        }
-
-        String worldKey = ((ServerWorld) player.getEntityWorld()).getRegistryKey().getValue().toString();
-        BlockPos historyPos = runtime.lookup().findTargetedEntityHistoryPos(player, 20.0D);
-        if (historyPos == null) {
-            sendCoreProtectMessage(source, Phrase.build(Phrase.NO_DATA_LOCATION, Selector.FIRST));
-            return 0;
-        }
-
-        submitAsync(
-            source.getServer(),
-            () -> {
-                List<StoredEventRecord> renderedEvents = runtime.lookup().loadBlockHistory(worldKey, historyPos, limit, List.of(
-                    CoreProtectEventType.ENTITY_PLACE,
-                    CoreProtectEventType.ENTITY_BREAK,
-                    CoreProtectEventType.ENTITY_USE
-                ));
-                List<StoredEventRecord> networkEvents = runtime.lookup().loadBlockHistory(worldKey, historyPos, limit, null);
-                List<Text> lines = runtime.lookup().renderBlockHistory(
-                    worldKey,
-                    historyPos,
-                    renderedEvents,
-                    "CoreProtect",
-                    COMMAND_PREFIX + Phrase.build(Phrase.NO_DATA_LOCATION, Selector.FIRST)
-                );
-                return new LookupRenderResult(lines, networkEvents, 1, null);
-            },
-            result -> {
-                sendLines(source, result.lines());
-                sendLookupNetworkData(source, result.networkEvents());
-            },
-            throwable -> handleLookupFailure(source, throwable)
-        );
-        return 1;
-    }
-
-    private static int lookupTargetedSign(ServerCommandSource source, FabricRuntime runtime, int limit) {
-        if (!CoreProtectPermissions.canLookupSign(source, true)) {
-            return 0;
-        }
-
-        return lookupTargetedBlockHistory(
-            source,
-            runtime,
-            limit,
-            List.of(CoreProtectEventType.SIGN_CHANGE),
-            Phrase.build(Phrase.SIGN_HEADER),
-            "CoreProtect - " + Phrase.build(Phrase.NO_DATA_LOCATION, Selector.FOURTH)
-        );
-    }
-
-    private static int lookupTargetedClick(ServerCommandSource source, FabricRuntime runtime, int limit) {
-        if (!CoreProtectPermissions.canLookupClick(source, true)) {
-            return 0;
-        }
-
-        return lookupTargetedBlockHistory(
-            source,
-            runtime,
-            limit,
-            List.of(CoreProtectEventType.BLOCK_USE, CoreProtectEventType.ENTITY_USE),
-            Phrase.build(Phrase.INTERACTIONS_HEADER),
-            "CoreProtect - " + Phrase.build(Phrase.NO_DATA_LOCATION, Selector.THIRD)
-        );
-    }
-
-    private static int lookupTargetedKill(ServerCommandSource source, FabricRuntime runtime, int limit) {
-        if (!CoreProtectPermissions.canLookupKill(source, true)) {
-            return 0;
-        }
-
-        return lookupTargetedBlockHistory(
-            source,
-            runtime,
-            limit,
-            List.of(CoreProtectEventType.ENTITY_KILL),
-            Phrase.build(Phrase.INTERACTIONS_HEADER),
-            "CoreProtect - " + Phrase.build(Phrase.NO_DATA_LOCATION, Selector.THIRD)
-        );
-    }
-
-    private static int lookupTargetedContainer(ServerCommandSource source, FabricRuntime runtime, int limit) {
-        if (!CoreProtectPermissions.canLookupContainer(source, true)) {
-            return 0;
-        }
-
-        return lookupTargetedBlockHistory(
-            source,
-            runtime,
-            limit,
-            List.of(CoreProtectEventType.CONTAINER_TRANSACTION),
-            Phrase.build(Phrase.CONTAINER_HEADER),
-            "CoreProtect - " + Phrase.build(Phrase.NO_DATA_LOCATION, Selector.SECOND)
-        );
-    }
-
-    private static int lookupTargetedInventory(ServerCommandSource source, FabricRuntime runtime, int limit) {
-        if (!CoreProtectPermissions.canLookupInventory(source, true)) {
-            return 0;
-        }
-
-        return lookupTargetedBlockHistory(
-            source,
-            runtime,
-            limit,
-            List.of(
-                CoreProtectEventType.CONTAINER_TRANSACTION,
-                CoreProtectEventType.ITEM_PICKUP,
-                CoreProtectEventType.ITEM_DROP,
-                CoreProtectEventType.ITEM_THROW,
-                CoreProtectEventType.ITEM_SHOOT,
-                CoreProtectEventType.ITEM_BUY,
-                CoreProtectEventType.ITEM_SELL,
-                CoreProtectEventType.ITEM_CREATE,
-                CoreProtectEventType.ITEM_DESTROY
-            ),
-            Phrase.build(Phrase.CONTAINER_HEADER),
-            "CoreProtect - " + Phrase.build(Phrase.NO_DATA_LOCATION, Selector.SECOND)
-        );
-    }
-
-    private static int lookupTargetedItem(ServerCommandSource source, FabricRuntime runtime, int limit) {
-        if (!CoreProtectPermissions.canLookupItem(source, true)) {
-            return 0;
-        }
-
-        return lookupTargetedBlockHistory(
-            source,
-            runtime,
-            limit,
-            List.of(
-                CoreProtectEventType.ITEM_PICKUP,
-                CoreProtectEventType.ITEM_DROP,
-                CoreProtectEventType.ITEM_THROW,
-                CoreProtectEventType.ITEM_SHOOT,
-                CoreProtectEventType.ITEM_BUY,
-                CoreProtectEventType.ITEM_SELL,
-                CoreProtectEventType.ITEM_CREATE,
-                CoreProtectEventType.ITEM_DESTROY
-            ),
-            Phrase.build(Phrase.LOOKUP_HEADER, "CoreProtect"),
-            "CoreProtect - " + Phrase.build(Phrase.NO_DATA_LOCATION, Selector.SECOND)
-        );
-    }
-
-    private static int lookupHere(ServerCommandSource source, FabricRuntime runtime, int radius, int seconds, int limit, String actorName) {
-        return lookupHere(source, runtime, radius, seconds, limit, actorName, null);
-    }
-
     private static int lookupHere(ServerCommandSource source, FabricRuntime runtime, int radius, int seconds, int limit, String actorName, List<CoreProtectEventType> actionFilter) {
         ServerPlayerEntity player = requirePlayer(source);
         if (player == null) {
@@ -799,7 +614,7 @@ public final class CoreProtectCommands {
         return 1;
     }
 
-    private static int runLegacyLookup(ServerCommandSource source, FabricRuntime runtime, String input) {
+    private static int runLookup(ServerCommandSource source, FabricRuntime runtime, String input) {
         LookupPageRequest pageRequest = parseLookupPageRequest(input);
         if (pageRequest != null) {
             return runLookupPage(source, runtime, pageRequest.page(), pageRequest.linesPerPage());
@@ -917,17 +732,9 @@ public final class CoreProtectCommands {
                 : source.getWorld().getRegistryKey().getValue().toString();
         }
 
-        QueryBounds legacyBounds = selectionBounds == null ? createLegacyBounds(source, player, worldKey, options) : null;
-        String scopeSummary = selectionBounds != null
-            ? describeScope(selectionBounds)
-            : legacyBounds != null
-                ? describeScope(legacyBounds)
-                : describeScope(worldKey, radius, player);
-        String timeSummary = describeTimeWindow(minimumSeconds, seconds);
-        String actorSummary = describeActors(actorNames, options.excludeActorNames());
-        String targetSummary = describeTargetFilters(options.includeTargets(), options.excludeTargets());
-        BlockPos center = legacyBounds == null && player != null && radius != null ? player.getBlockPos().toImmutable() : null;
-        QueryBounds lookupBounds = selectionBounds != null ? selectionBounds : legacyBounds;
+        QueryBounds inputBounds = selectionBounds == null ? createBoundsFromOptions(source, player, worldKey, options) : null;
+        BlockPos center = inputBounds == null && player != null && radius != null ? player.getBlockPos().toImmutable() : null;
+        QueryBounds lookupBounds = selectionBounds != null ? selectionBounds : inputBounds;
         Integer lookupRadius = lookupBounds == null ? radius : null;
         String lookupWorldKey = worldKey;
         List<CoreProtectEventType> lookupActionFilter = actionFilter;
@@ -1261,95 +1068,7 @@ public final class CoreProtectCommands {
         );
     }
 
-    private static int runRollback(ServerCommandSource source, FabricRuntime runtime, boolean restore, int seconds, int radius, String actorName) {
-        return runRollback(source, runtime, restore, seconds, radius, actorName, null);
-    }
-
-    private static int runRollback(ServerCommandSource source, FabricRuntime runtime, boolean restore, int seconds, int radius, String actorName, List<CoreProtectEventType> actionFilter) {
-        if (!CoreProtectPermissions.canRunRollback(source, restore, true)) {
-            return 0;
-        }
-        if (PURGE_RUNNING.get()) {
-            sendCoreProtectPhrase(source, Phrase.PURGE_IN_PROGRESS);
-            return 0;
-        }
-        ServerPlayerEntity player = source.getEntity() instanceof ServerPlayerEntity serverPlayer ? serverPlayer : null;
-        if (player == null && isConsoleSource(source)) {
-            sendCoreProtectPhrase(source, Phrase.GLOBAL_ROLLBACK, "r:#global", restore ? Selector.SECOND : Selector.FIRST);
-            return 0;
-        }
-
-        if (player != null) {
-            runtime.previews().clear(player);
-        }
-        TimeWindow timeWindow = fixedTimeWindow(0, seconds);
-        QueryBounds radiusBounds = player != null ? createRadiusBounds(player, radius) : createRadiusBounds(source, radius);
-        List<String> actorNames = actorName == null || actorName.isBlank() ? null : List.of(actorName);
-        if (!validateRollbackUsers(source, runtime, actorNames, null)) {
-            return 0;
-        }
-        String worldKey = source.getWorld().getRegistryKey().getValue().toString();
-        String subject = describeRollbackSubject(worldKey, actorNames);
-        if (!beginRollbackSession(source)) {
-            return 0;
-        }
-        sendCoreProtectPhrase(source, Phrase.ROLLBACK_STARTED, subject, restore ? Selector.SECOND : Selector.FIRST);
-        long startedAt = System.nanoTime();
-        String scopeSummary = describeScope(source.getWorld().getRegistryKey().getValue().toString(), radius, player);
-        String actorSummary = actorName == null || actorName.isBlank() ? "" : ", actor=" + actorName;
-        String timeSummary = describeDuration(seconds);
-        submitAsync(
-            source.getServer(),
-            () -> runtime.rollback().collectCandidatesBetween(
-                timeWindow.notBefore(),
-                timeWindow.notAfter(),
-                null,
-                radiusBounds,
-                actorNames,
-                null,
-                restore,
-                actionFilter,
-                null,
-                null
-            ),
-            candidates -> runtime.rollback().enqueuePreparedApply(
-                candidates,
-                restore,
-                radius,
-                seconds,
-                summarizeActors(actorNames),
-                result -> {
-                    rememberUndo(
-                        source,
-                        runtime,
-                        new UndoSessionService.UndoOperation(
-                            restore,
-                            false,
-                            null,
-                            radiusBounds,
-                            timeWindow.notBefore(),
-                            timeWindow.notAfter(),
-                            actorNames,
-                            null,
-                            actionFilter,
-                            null,
-                            null,
-                            describeUndoOperation(scopeSummary, timeSummary, actorSummary, "", describeActionFilters(actionFilter))
-                        )
-                    );
-                    sendRollbackOutcome(source, restore, false, subject, timeSummary, radius, null, worldKey, result.changed(), System.nanoTime() - startedAt, false);
-                    endRollbackSession(source);
-                }
-            ),
-            throwable -> {
-                handleRollbackFailure(source, throwable);
-                endRollbackSession(source);
-            }
-        );
-        return 1;
-    }
-
-    private static int runLegacyRollback(ServerCommandSource source, FabricRuntime runtime, boolean restore, String input) {
+    private static int runRollback(ServerCommandSource source, FabricRuntime runtime, boolean restore, String input) {
         LegacyCommandOptions options = LegacyCommandParser.parse(input);
         if (!CoreProtectPermissions.canRunRollback(source, restore, true)) {
             return 0;
@@ -1497,7 +1216,7 @@ public final class CoreProtectCommands {
 
         QueryBounds scopeBounds = selectionBounds != null
             ? selectionBounds
-            : createLegacyBounds(source, player, worldKey, options);
+            : createBoundsFromOptions(source, player, worldKey, options);
         TimeWindow timeWindow = fixedTimeWindow(minimumSeconds, seconds);
         String subject = describeRollbackSubject(scopeBounds == null ? worldKey : scopeBounds.worldKey(), actorNames);
         String timeSummary = describeTimeWindow(minimumSeconds, seconds);
@@ -1663,7 +1382,7 @@ public final class CoreProtectCommands {
         return 1;
     }
 
-    private static int runLegacyPurge(ServerCommandSource source, FabricRuntime runtime, String input) {
+    private static int runPurgeFromInput(ServerCommandSource source, FabricRuntime runtime, String input) {
         PurgeCommandOptions options = PurgeCommandParser.parse(input);
         if (options.isEmpty() || options.seconds() == null) {
             return sendPurgeUsage(source);
@@ -2520,37 +2239,17 @@ public final class CoreProtectCommands {
         return describeDuration(minimumSeconds) + "-" + describeDuration(maximumSeconds);
     }
 
-    private static QueryBounds createRadiusBounds(ServerPlayerEntity player, int radius) {
-        BlockPos center = player.getBlockPos();
-        String worldKey = ((ServerWorld) player.getEntityWorld()).getRegistryKey().getValue().toString();
-        return new QueryBounds(
-            worldKey,
-            new BlockPos(center.getX() - radius, center.getY() - radius, center.getZ() - radius),
-            new BlockPos(center.getX() + radius, center.getY() + radius, center.getZ() + radius)
-        );
-    }
-
-    private static QueryBounds createRadiusBounds(ServerCommandSource source, int radius) {
-        BlockPos center = BlockPos.ofFloored(source.getPosition());
-        String worldKey = source.getWorld().getRegistryKey().getValue().toString();
-        return new QueryBounds(
-            worldKey,
-            new BlockPos(center.getX() - radius, center.getY() - radius, center.getZ() - radius),
-            new BlockPos(center.getX() + radius, center.getY() + radius, center.getZ() + radius)
-        );
-    }
-
-    private static QueryBounds createLegacyBounds(ServerCommandSource source, ServerPlayerEntity player, String worldKey, LegacyCommandOptions options) {
+    private static QueryBounds createBoundsFromOptions(ServerCommandSource source, ServerPlayerEntity player, String worldKey, LegacyCommandOptions options) {
         if (options == null || options.radius() == null) {
             return null;
         }
 
-        ServerWorld world = resolveLegacyWorld(source, worldKey, player);
+        ServerWorld world = resolveTargetWorld(source, worldKey, player);
         if (world == null) {
             return null;
         }
 
-        BlockPos center = resolveLegacyCenter(source, player, options);
+        BlockPos center = resolveTargetCenter(source, player, options);
         if (center == null) {
             return null;
         }
@@ -2567,7 +2266,7 @@ public final class CoreProtectCommands {
         );
     }
 
-    private static ServerWorld resolveLegacyWorld(ServerCommandSource source, String worldKey, ServerPlayerEntity player) {
+    private static ServerWorld resolveTargetWorld(ServerCommandSource source, String worldKey, ServerPlayerEntity player) {
         if (worldKey != null && !worldKey.isBlank()) {
             Identifier identifier = Identifier.tryParse(worldKey);
             return identifier == null ? null : source.getServer().getWorld(RegistryKey.of(RegistryKeys.WORLD, identifier));
@@ -2578,7 +2277,7 @@ public final class CoreProtectCommands {
         return source.getWorld();
     }
 
-    private static BlockPos resolveLegacyCenter(ServerCommandSource source, ServerPlayerEntity player, LegacyCommandOptions options) {
+    private static BlockPos resolveTargetCenter(ServerCommandSource source, ServerPlayerEntity player, LegacyCommandOptions options) {
         if (options != null && options.coordinates() != null && !options.coordinates().isBlank()) {
             String[] parts = options.coordinates().split(",", -1);
             try {
@@ -2790,8 +2489,8 @@ public final class CoreProtectCommands {
             String worldKey = options.worldFilter() == null || isGlobalWorldFilter(options.worldFilter())
                 ? source.getWorld().getRegistryKey().getValue().toString()
                 : resolveWorldFilter(source, options.worldFilter());
-            world = resolveLegacyWorld(source, worldKey, player);
-            pos = resolveLegacyCenter(source, player, options);
+            world = resolveTargetWorld(source, worldKey, player);
+            pos = resolveTargetCenter(source, player, options);
         }
         else {
             if (player == null) {

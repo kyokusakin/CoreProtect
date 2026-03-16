@@ -7,7 +7,6 @@ import java.util.Locale;
 import net.coreprotect.fabric.CoreProtectFabricMod;
 import net.coreprotect.fabric.FabricRuntime;
 import net.coreprotect.fabric.db.StoredEventRecord;
-import net.coreprotect.fabric.language.PhraseService;
 import net.coreprotect.language.Phrase;
 import net.coreprotect.fabric.log.CoreProtectEventType;
 import net.coreprotect.fabric.service.RollbackExecutionResult;

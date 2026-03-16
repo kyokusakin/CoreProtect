@@ -34,7 +34,7 @@ public final class DatabaseMigrationService {
         long nextProgressAt = System.currentTimeMillis() + PROGRESS_INTERVAL_MS;
 
         try {
-            targetDatabase = new CoreProtectDatabase(targetConfig, runtime.rootDirectory(), logger);
+            targetDatabase = new CoreProtectDatabase(targetConfig, runtime.databaseRootDirectory(), logger);
             targetDatabase.start();
 
             long targetRows = targetDatabase.countAllEvents();

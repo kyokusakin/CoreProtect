@@ -2,7 +2,6 @@ package net.coreprotect.fabric.listener.channel;
 
 import net.coreprotect.fabric.CoreProtectFabricMod;
 import net.coreprotect.fabric.command.CoreProtectText;
-import net.coreprotect.fabric.language.PhraseService;
 import net.coreprotect.language.Phrase;
 import net.coreprotect.language.Selector;
 import net.coreprotect.fabric.permission.CoreProtectPermissions;
@@ -13,7 +12,6 @@ import net.minecraft.network.codec.PacketCodec;
 import net.minecraft.network.packet.CustomPayload;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 
 import java.io.ByteArrayOutputStream;

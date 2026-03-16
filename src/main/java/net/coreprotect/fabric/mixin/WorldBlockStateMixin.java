@@ -2,11 +2,9 @@ package net.coreprotect.fabric.mixin;
 
 import net.coreprotect.fabric.listener.block.BlockBurnListener;
 import net.coreprotect.fabric.listener.block.BlockFadeListener;
-import net.coreprotect.fabric.listener.block.BlockFertilizeListener;
 import net.coreprotect.fabric.listener.block.BlockIgniteListener;
 import net.coreprotect.fabric.listener.block.BlockSpreadListener;
 import net.coreprotect.fabric.listener.entity.EntityChangeBlockListener;
-import net.coreprotect.fabric.listener.world.StructureGrowListener;
 import net.coreprotect.fabric.listener.world.LeavesDecayListener;
 import net.coreprotect.fabric.util.BonemealFertilizeContext;
 import net.coreprotect.fabric.util.EntityBlockChangeContext;

@@ -3,7 +3,6 @@ package net.coreprotect.fabric;
 import net.coreprotect.fabric.command.CoreProtectCommands;
 import net.coreprotect.fabric.api.CoreProtectFabric;
 import net.coreprotect.fabric.api.CoreProtectFabricAPI;
-import net.coreprotect.fabric.listener.entity.EntityDeathListener;
 import net.coreprotect.fabric.listener.channel.PluginChannelHandshakeListener;
 import net.coreprotect.fabric.listener.channel.PluginChannelListener;
 import net.coreprotect.fabric.listener.player.PlayerInteractEntityListener;

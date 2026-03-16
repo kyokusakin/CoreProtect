@@ -7,7 +7,6 @@ import net.coreprotect.fabric.util.TransientLookupCache;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.registry.tag.BlockTags;
-import net.minecraft.server.world.ServerWorld;
 
 public final class PortalCreateListener {
     private PortalCreateListener() {

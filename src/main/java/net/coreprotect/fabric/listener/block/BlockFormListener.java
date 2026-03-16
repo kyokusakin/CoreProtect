@@ -2,7 +2,6 @@ package net.coreprotect.fabric.listener.block;
 
 import net.coreprotect.fabric.CoreProtectFabricMod;
 import net.coreprotect.fabric.FabricRuntime;
-import net.coreprotect.fabric.util.BlockStateSerializer;
 import net.coreprotect.fabric.util.TransientLookupCache;
 import net.minecraft.block.BlockState;
 import net.minecraft.registry.Registries;

@@ -9,7 +9,6 @@ import net.coreprotect.language.Selector;
 import net.coreprotect.fabric.log.CoreProtectEventType;
 import net.coreprotect.fabric.util.LoggedSignState;
 import net.coreprotect.fabric.util.LoggedItemChange;
-import net.coreprotect.fabric.util.LoggedItemData;
 import net.coreprotect.fabric.util.QueryBounds;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.decoration.ArmorStandEntity;
@@ -36,9 +35,7 @@ import java.time.format.DateTimeFormatter;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.StringJoiner;
 
 public final class LookupService {
@@ -1099,140 +1096,6 @@ public final class LookupService {
 
         timeSince = timeSince / 24.0D;
         return Phrase.build(Phrase.LOOKUP_TIME, ELAPSED_DECIMAL.format(timeSince) + Phrase.build(Phrase.TIME_UNITS, Selector.THIRD));
-    }
-
-    private String describeTimeWindow(int minimumSeconds, int maximumSeconds) {
-        if (minimumSeconds <= 0) {
-            return maximumSeconds + "s";
-        }
-        return minimumSeconds + "s-" + maximumSeconds + "s";
-    }
-
-    private String describeFilter(List<CoreProtectEventType> eventTypes) {
-        if (eventTypes == null || eventTypes.isEmpty()) {
-            return "";
-        }
-
-        Set<String> labels = new LinkedHashSet<>();
-        boolean hasContainer = eventTypes.contains(CoreProtectEventType.CONTAINER_TRANSACTION);
-        boolean hasItem = containsItemEvents(eventTypes);
-        if (hasContainer && hasItem) {
-            labels.add("inventory");
-        }
-        for (CoreProtectEventType eventType : eventTypes) {
-            if (hasContainer && hasItem && (eventType == CoreProtectEventType.CONTAINER_TRANSACTION || isItemEvent(eventType))) {
-                continue;
-            }
-            labels.add(filterLabel(eventType));
-        }
-
-        StringJoiner joiner = new StringJoiner(",");
-        for (String label : labels) {
-            joiner.add(label);
-        }
-        return " actions=" + joiner;
-    }
-
-    private String describeScope(String worldKey, BlockPos center, Integer radius) {
-        if (center != null && radius != null) {
-            return "local@" + center.getX() + "," + center.getY() + "," + center.getZ() + " r=" + radius;
-        }
-        if (worldKey != null && !worldKey.isBlank()) {
-            return "world=" + worldKey;
-        }
-        return "global";
-    }
-
-    private String describeActors(List<String> actorNames, List<String> excludeActorNames) {
-        StringBuilder builder = new StringBuilder();
-        if (actorNames != null && !actorNames.isEmpty()) {
-            StringJoiner joiner = new StringJoiner(",");
-            for (String actorName : actorNames) {
-                joiner.add(actorName);
-            }
-            builder.append(" actor=").append(joiner);
-        }
-        if (excludeActorNames != null && !excludeActorNames.isEmpty()) {
-            StringJoiner joiner = new StringJoiner(",");
-            for (String actorName : excludeActorNames) {
-                joiner.add(actorName);
-            }
-            builder.append(" exclude-user=").append(joiner);
-        }
-        return builder.toString();
-    }
-
-    private String describeTargetFilters(List<String> includeTargets, List<String> excludeTargets) {
-        StringBuilder builder = new StringBuilder();
-        if (includeTargets != null && !includeTargets.isEmpty()) {
-            builder.append(" include=");
-            appendCsv(builder, includeTargets);
-        }
-        if (excludeTargets != null && !excludeTargets.isEmpty()) {
-            builder.append(" exclude=");
-            appendCsv(builder, excludeTargets);
-        }
-        return builder.toString();
-    }
-
-    private void appendCsv(StringBuilder builder, List<String> values) {
-        StringJoiner joiner = new StringJoiner(",");
-        for (String value : values) {
-            joiner.add(value);
-        }
-        builder.append(joiner);
-    }
-
-    private String filterLabel(CoreProtectEventType eventType) {
-        switch (eventType) {
-            case BLOCK_BREAK:
-            case BLOCK_PLACE:
-            case ENTITY_BREAK:
-            case ENTITY_PLACE:
-                return "block";
-            case ITEM_PICKUP:
-            case ITEM_DROP:
-            case ITEM_THROW:
-            case ITEM_SHOOT:
-            case ITEM_BUY:
-            case ITEM_SELL:
-            case ITEM_CREATE:
-            case ITEM_DESTROY:
-                return "item";
-            case BLOCK_USE:
-            case ENTITY_USE:
-                return "click";
-            case ENTITY_KILL:
-                return "kill";
-            case SIGN_CHANGE:
-                return "sign";
-            case CONTAINER_TRANSACTION:
-                return "container";
-            case USERNAME_CHANGE:
-                return "username";
-            case PLAYER_CHAT:
-                return "chat";
-            case PLAYER_COMMAND:
-                return "command";
-            case PLAYER_JOIN:
-            case PLAYER_QUIT:
-                return "session";
-            case SERVER_START:
-                return "server-start";
-            case SERVER_STOP:
-                return "server-stop";
-            default:
-                return eventType.name().toLowerCase();
-        }
-    }
-
-    private boolean containsItemEvents(List<CoreProtectEventType> eventTypes) {
-        for (CoreProtectEventType eventType : eventTypes) {
-            if (isItemEvent(eventType)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private boolean isItemEvent(CoreProtectEventType eventType) {
