@@ -3,6 +3,7 @@ package net.coreprotect.fabric.service;
 import net.coreprotect.fabric.CoreProtectFabricMod;
 import net.coreprotect.fabric.db.StoredEventRecord;
 import net.coreprotect.fabric.listener.channel.PluginChannelListener;
+import net.coreprotect.fabric.util.InteractionAggregatePayload;
 import net.coreprotect.fabric.util.LoggedItemChange;
 import net.coreprotect.language.Phrase;
 import net.coreprotect.language.Selector;
@@ -88,7 +89,16 @@ public final class LookupNetworkingService {
         return switch (event.type()) {
             case BLOCK_PLACE, ENTITY_PLACE -> new LookupNetworkPayload(selectorWord(Phrase.LOOKUP_BLOCK, Selector.FIRST, "placed"), simplifyIdentifier(event.target()), -1, false, true);
             case BLOCK_BREAK, ENTITY_BREAK -> new LookupNetworkPayload(selectorWord(Phrase.LOOKUP_BLOCK, Selector.SECOND, "broke"), simplifyIdentifier(event.target()), -1, false, false);
-            case BLOCK_USE, ENTITY_USE -> new LookupNetworkPayload(selectorWord(Phrase.LOOKUP_INTERACTION, Selector.FIRST, "clicked"), simplifyIdentifier(event.target()), -1, false, false);
+            case BLOCK_USE, ENTITY_USE -> {
+                int clickCount = InteractionAggregatePayload.clickCount(event.payload());
+                yield new LookupNetworkPayload(
+                    selectorWord(Phrase.LOOKUP_INTERACTION, Selector.FIRST, "clicked"),
+                    simplifyIdentifier(event.target()),
+                    clickCount > 1 ? clickCount : -1,
+                    false,
+                    false
+                );
+            }
             case ENTITY_KILL -> new LookupNetworkPayload(selectorWord(Phrase.LOOKUP_INTERACTION, Selector.SECOND, "killed"), simplifyIdentifier(event.target()), -1, false, false);
             case CONTAINER_TRANSACTION -> parseContainerPayload(event);
             case ITEM_PICKUP, ITEM_BUY, ITEM_CREATE -> new LookupNetworkPayload(selectorWord(Phrase.LOOKUP_ITEM, Selector.FIRST, "picked up"), itemTarget, itemChange.count(), false, true);

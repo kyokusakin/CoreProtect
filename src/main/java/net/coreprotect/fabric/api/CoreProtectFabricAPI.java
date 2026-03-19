@@ -11,6 +11,7 @@ import net.coreprotect.language.Phrase;
 import net.coreprotect.fabric.log.CoreProtectEventType;
 import net.coreprotect.fabric.service.RollbackExecutionResult;
 import net.coreprotect.fabric.service.RollbackService;
+import net.coreprotect.fabric.util.InteractionAggregatePayload;
 import net.coreprotect.fabric.util.QueryBounds;
 import net.coreprotect.fabric.util.TransientLookupCache;
 import net.minecraft.block.Block;
@@ -1321,7 +1322,8 @@ public final class CoreProtectFabricAPI {
         }
 
         return switch (record.type()) {
-            case BLOCK_BREAK, BLOCK_PLACE, BLOCK_USE, SIGN_CHANGE -> record.payload();
+            case BLOCK_BREAK, BLOCK_PLACE, SIGN_CHANGE -> record.payload();
+            case BLOCK_USE -> InteractionAggregatePayload.stripMetadata(record.payload());
             default -> "";
         };
     }

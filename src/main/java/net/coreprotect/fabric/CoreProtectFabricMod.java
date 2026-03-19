@@ -66,10 +66,15 @@ public final class CoreProtectFabricMod implements DedicatedServerModInitializer
         ServerLifecycleEvents.SERVER_STOPPING.register(this::onServerStopping);
         ServerTickEvents.END_SERVER_TICK.register(server -> {
             FabricRuntime currentRuntime = runtime;
-            if (currentRuntime == null || currentRuntime.rollback() == null) {
+            if (currentRuntime == null) {
                 return;
             }
-            currentRuntime.rollback().tick(server);
+            if (currentRuntime.logger() != null) {
+                currentRuntime.logger().tick();
+            }
+            if (currentRuntime.rollback() != null) {
+                currentRuntime.rollback().tick(server);
+            }
         });
 
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
@@ -107,6 +112,7 @@ public final class CoreProtectFabricMod implements DedicatedServerModInitializer
 
             var eventLogger = currentRuntime.logger();
             if (eventLogger != null) {
+                eventLogger.flushInteractionAggregates(handler.player.getUuidAsString());
                 eventLogger.logPlayerQuit(handler.player);
             }
 
@@ -236,6 +242,7 @@ public final class CoreProtectFabricMod implements DedicatedServerModInitializer
 
     private void onServerStopping(MinecraftServer server) {
         if (runtime.logger() != null) {
+            runtime.logger().flushInteractionAggregates();
             runtime.logger().logServerStop(server);
         }
         runtime.shutdown();

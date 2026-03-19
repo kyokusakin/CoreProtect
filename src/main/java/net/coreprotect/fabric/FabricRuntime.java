@@ -98,6 +98,9 @@ public final class FabricRuntime {
             return;
         }
 
+        if (eventLogger != null) {
+            eventLogger.flushInteractionAggregates();
+        }
         closeOptionalIntegration(worldEditIntegration, "WorldEdit");
         worldEditIntegration = null;
         TransientLookupCache.clear();
@@ -127,6 +130,9 @@ public final class FabricRuntime {
         AutoCloseable previousWorldEditIntegration = worldEditIntegration;
 
         try {
+            if (eventLogger != null) {
+                eventLogger.flushInteractionAggregates();
+            }
             TransientLookupCache.clear();
             WorldConfigService newWorldConfigs = WorldConfigService.load(rootDirectory, configPath);
             CoreProtectFabricConfig newConfig = newWorldConfigs.globalConfig();

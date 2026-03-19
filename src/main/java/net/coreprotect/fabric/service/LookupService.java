@@ -7,6 +7,7 @@ import net.coreprotect.fabric.language.PhraseService;
 import net.coreprotect.language.Phrase;
 import net.coreprotect.language.Selector;
 import net.coreprotect.fabric.log.CoreProtectEventType;
+import net.coreprotect.fabric.util.InteractionAggregatePayload;
 import net.coreprotect.fabric.util.LoggedSignState;
 import net.coreprotect.fabric.util.LoggedItemChange;
 import net.coreprotect.fabric.util.QueryBounds;
@@ -607,6 +608,10 @@ public final class LookupService {
 
         if (!target.isBlank()) {
             line.append(styledLookupText(" " + target, Formatting.DARK_AQUA, event.rolledBack()));
+            int clickCount = interactionCount(event);
+            if (clickCount > 1 && (event.type() == CoreProtectEventType.BLOCK_USE || event.type() == CoreProtectEventType.ENTITY_USE)) {
+                line.append(styledLookupText(" x" + clickCount, Formatting.DARK_AQUA, event.rolledBack()));
+            }
         }
 
         return line;
@@ -883,6 +888,16 @@ public final class LookupService {
             return structuredDelta;
         }
         return new ContainerDelta(simplifyTarget(event.target()), 1, true, LoggedItemChange.parse(event.target(), event.payload()));
+    }
+
+    private int interactionCount(StoredEventRecord event) {
+        if (event == null) {
+            return 1;
+        }
+        if (event.type() != CoreProtectEventType.BLOCK_USE && event.type() != CoreProtectEventType.ENTITY_USE) {
+            return 1;
+        }
+        return InteractionAggregatePayload.clickCount(event.payload());
     }
 
     private ContainerDelta parseStructuredContainerDelta(String payload) {

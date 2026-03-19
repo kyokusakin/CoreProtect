@@ -7,6 +7,7 @@ import net.coreprotect.fabric.service.BlacklistService;
 import net.coreprotect.fabric.service.WorldConfigService;
 import net.coreprotect.fabric.util.BlockStateSerializer;
 import net.coreprotect.fabric.util.ContainerTransactionHelper;
+import net.coreprotect.fabric.util.InteractionAggregatePayload;
 import net.coreprotect.fabric.util.LoggedItemChange;
 import net.coreprotect.fabric.util.LoggedItemData;
 import net.coreprotect.fabric.util.LoggedSignState;
@@ -39,19 +40,26 @@ import net.minecraft.util.ErrorReporter;
 import org.slf4j.Logger;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 public final class FabricEventLogger {
     private static final int MAX_ENTITY_NBT_LENGTH = 32_768;
+    private static final long INTERACTION_AGGREGATION_IDLE_MS = 1000L;
     private final Object cutoverMonitor = new Object();
+    private final Object interactionAggregationMonitor = new Object();
     private final Logger logger;
     private CoreProtectDatabase database;
     private WorldConfigService configs;
     private BlacklistService blacklist;
     private boolean cutoverBuffering;
     private final List<EventRecord> cutoverBuffer = new ArrayList<>();
+    private final Map<InteractionAggregateKey, InteractionAggregate> interactionAggregates = new HashMap<>();
 
     public FabricEventLogger(CoreProtectDatabase database, WorldConfigService configs, BlacklistService blacklist, Logger logger) {
         this.database = database;
@@ -489,7 +497,7 @@ public final class FabricEventLogger {
             return;
         }
 
-        write(playerRecord(
+        queueInteractionRecord(playerRecord(
             CoreProtectEventType.ENTITY_USE,
             player,
             world,
@@ -660,7 +668,7 @@ public final class FabricEventLogger {
             return;
         }
 
-        write(playerRecord(CoreProtectEventType.BLOCK_USE, player, world, pos, BlockStateSerializer.describeBlock(state), BlockStateSerializer.serialize(state)));
+        queueInteractionRecord(playerRecord(CoreProtectEventType.BLOCK_USE, player, world, pos, BlockStateSerializer.describeBlock(state), BlockStateSerializer.serialize(state)));
     }
 
     public void logBlockUse(String actorName, ServerWorld world, BlockPos pos, BlockState state) {
@@ -671,7 +679,22 @@ public final class FabricEventLogger {
             return;
         }
 
-        write(blockRecord(CoreProtectEventType.BLOCK_USE, null, actorName, world, pos, state));
+        queueInteractionRecord(blockRecord(CoreProtectEventType.BLOCK_USE, null, actorName, world, pos, state));
+    }
+
+    public void tick() {
+        flushInteractionAggregatesInternal(System.currentTimeMillis(), null, false);
+    }
+
+    public void flushInteractionAggregates() {
+        flushInteractionAggregatesInternal(System.currentTimeMillis(), null, true);
+    }
+
+    public void flushInteractionAggregates(String actorUuid) {
+        if (actorUuid == null || actorUuid.isBlank()) {
+            return;
+        }
+        flushInteractionAggregatesInternal(System.currentTimeMillis(), actorUuid, true);
     }
 
     private EventRecord playerRecord(CoreProtectEventType type, ServerPlayerEntity player, ServerWorld world, BlockPos pos, String target, String payload) {
@@ -735,6 +758,59 @@ public final class FabricEventLogger {
             change.summaryTarget(),
             change.serializePayload()
         ));
+    }
+
+    private void queueInteractionRecord(EventRecord record) {
+        if (record == null) {
+            return;
+        }
+
+        List<EventRecord> expired = new ArrayList<>();
+        long now = System.currentTimeMillis();
+        synchronized (interactionAggregationMonitor) {
+            collectInteractionAggregates(now, expired, null, false);
+            InteractionAggregateKey key = InteractionAggregateKey.from(record);
+            InteractionAggregate aggregate = interactionAggregates.get(key);
+            if (aggregate == null) {
+                interactionAggregates.put(key, new InteractionAggregate(record));
+            }
+            else {
+                aggregate.touch(record);
+            }
+        }
+        flushFinalizedInteractionAggregates(expired);
+    }
+
+    private void flushInteractionAggregatesInternal(long now, String actorUuid, boolean force) {
+        List<EventRecord> finalized = new ArrayList<>();
+        synchronized (interactionAggregationMonitor) {
+            collectInteractionAggregates(now, finalized, actorUuid, force);
+        }
+        flushFinalizedInteractionAggregates(finalized);
+    }
+
+    private void collectInteractionAggregates(long now, List<EventRecord> finalized, String actorUuid, boolean force) {
+        Iterator<Map.Entry<InteractionAggregateKey, InteractionAggregate>> iterator = interactionAggregates.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<InteractionAggregateKey, InteractionAggregate> entry = iterator.next();
+            InteractionAggregateKey key = entry.getKey();
+            InteractionAggregate aggregate = entry.getValue();
+            if (actorUuid != null && !Objects.equals(key.actorUuid(), actorUuid)) {
+                continue;
+            }
+            if (!force && (now - aggregate.lastTimestamp()) < INTERACTION_AGGREGATION_IDLE_MS) {
+                continue;
+            }
+
+            finalized.add(aggregate.toRecord());
+            iterator.remove();
+        }
+    }
+
+    private void flushFinalizedInteractionAggregates(List<EventRecord> finalized) {
+        for (EventRecord record : finalized) {
+            write(record);
+        }
     }
 
     private void write(EventRecord record) {
@@ -1087,6 +1163,76 @@ public final class FabricEventLogger {
 
     private CoreProtectFabricConfig configFor(String worldKey) {
         return configs == null ? CoreProtectFabricConfig.loadDefaults() : configs.resolve(worldKey);
+    }
+
+    private record InteractionAggregateKey(
+        CoreProtectEventType type,
+        String actorUuid,
+        String actorIdentity,
+        String worldKey,
+        Integer x,
+        Integer y,
+        Integer z,
+        String target
+    ) {
+        private static InteractionAggregateKey from(EventRecord record) {
+            String actorUuid = record.actorUuid();
+            String actorIdentity = actorUuid == null || actorUuid.isBlank()
+                ? "name:" + (record.actorName() == null ? "" : record.actorName())
+                : "uuid:" + actorUuid;
+            return new InteractionAggregateKey(
+                record.type(),
+                actorUuid,
+                actorIdentity,
+                record.worldKey(),
+                record.x(),
+                record.y(),
+                record.z(),
+                record.target()
+            );
+        }
+    }
+
+    private static final class InteractionAggregate {
+        private final EventRecord seed;
+        private final long firstTimestamp;
+        private long lastTimestamp;
+        private int count;
+        private String latestPayload;
+
+        private InteractionAggregate(EventRecord seed) {
+            this.seed = seed;
+            this.firstTimestamp = seed.timestamp();
+            this.lastTimestamp = seed.timestamp();
+            this.count = 1;
+            this.latestPayload = seed.payload();
+        }
+
+        private void touch(EventRecord record) {
+            lastTimestamp = record.timestamp();
+            count++;
+            latestPayload = record.payload();
+        }
+
+        private long lastTimestamp() {
+            return lastTimestamp;
+        }
+
+        private EventRecord toRecord() {
+            String payload = InteractionAggregatePayload.withAggregation(latestPayload, count, firstTimestamp, lastTimestamp);
+            return new EventRecord(
+                lastTimestamp,
+                seed.type(),
+                seed.actorUuid(),
+                seed.actorName(),
+                seed.worldKey(),
+                seed.x(),
+                seed.y(),
+                seed.z(),
+                seed.target(),
+                payload
+            );
+        }
     }
 }
 
