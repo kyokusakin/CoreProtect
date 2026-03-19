@@ -147,6 +147,28 @@ public final class InspectorService {
         return true;
     }
 
+    public boolean shouldTrackBlockUse(ServerWorld world, BlockPos pos, BlockState state) {
+        if (world == null || pos == null || state == null) {
+            return false;
+        }
+
+        return state.getBlock() instanceof AbstractSignBlock
+            || isContainerTarget(world, pos)
+            || isInteractionBlock(state);
+    }
+
+    public BlockPos normalizeTrackedBlockUsePos(ServerWorld world, BlockPos pos, BlockState state) {
+        if (world == null || pos == null || state == null) {
+            return pos;
+        }
+
+        if (isInteractionBlock(state)) {
+            return normalizeInteractionPos(world, pos, state);
+        }
+
+        return pos;
+    }
+
     private int prepareInspect(ServerPlayerEntity player) {
         if (!isEnabled(player)) {
             return INSPECT_DISABLED;

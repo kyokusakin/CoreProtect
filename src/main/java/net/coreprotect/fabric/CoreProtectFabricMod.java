@@ -20,6 +20,7 @@ import net.fabricmc.fabric.api.event.player.AttackBlockCallback;
 import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.event.player.UseEntityCallback;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
+import net.minecraft.block.BlockState;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.decoration.ArmorStandEntity;
 import net.minecraft.entity.decoration.ItemFrameEntity;
@@ -190,9 +191,14 @@ public final class CoreProtectFabricMod implements DedicatedServerModInitializer
                 ServerPlayerEntity serverPlayer = (ServerPlayerEntity) player;
                 ServerWorld serverWorld = (ServerWorld) world;
                 BlockPos pos = hitResult.getBlockPos();
-                runtime.containers().trackPotentialAccess(serverPlayer, serverWorld, pos, world.getBlockState(pos));
+                BlockState clickedState = world.getBlockState(pos);
+                runtime.containers().trackPotentialAccess(serverPlayer, serverWorld, pos, clickedState);
                 if (!(player.getStackInHand(hand).getItem() instanceof BlockItem)) {
-                    runtime.logger().logBlockUse(serverPlayer, serverWorld, pos, world.getBlockState(pos));
+                    var inspectorService = runtime.inspector();
+                    if (inspectorService.shouldTrackBlockUse(serverWorld, pos, clickedState)) {
+                        BlockPos loggedPos = inspectorService.normalizeTrackedBlockUsePos(serverWorld, pos, clickedState);
+                        runtime.logger().logBlockUse(serverPlayer, serverWorld, loggedPos, serverWorld.getBlockState(loggedPos));
+                    }
                 }
             }
             return ActionResult.PASS;
