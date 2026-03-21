@@ -31,18 +31,6 @@ public final class InteractionAggregatePayload {
         return clickCount(payload);
     }
 
-    public static String appendDisplayCount(String target, CoreProtectEventType type, String payload) {
-        if (target == null || target.isBlank()) {
-            return target == null ? "" : target;
-        }
-
-        int count = displayCount(type, payload);
-        if (count <= 1) {
-            return target;
-        }
-        return target + " x" + count;
-    }
-
     public static String stripMetadata(String payload) {
         if (payload == null || payload.isBlank()) {
             return payload;

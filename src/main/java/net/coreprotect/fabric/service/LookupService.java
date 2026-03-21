@@ -599,13 +599,17 @@ public final class LookupService {
         String actor = event.actorName() == null
             ? PhraseService.getInstance().phrase("lookup.system_actor", "system")
             : event.actorName();
-        String target = InteractionAggregatePayload.appendDisplayCount(describeTarget(event), event.type(), event.payload());
+        String target = describeTarget(event);
+        int displayCount = InteractionAggregatePayload.displayCount(event.type(), event.payload());
 
         MutableText line = ageText(event, age)
             .append(Text.literal(genericTag(event.type())).formatted(genericTagColor(event.type())))
             .append(styledLookupText(actor, Formatting.AQUA, event.rolledBack()))
             .append(styledLookupText(" " + verb(event.type()), Formatting.WHITE, event.rolledBack()));
 
+        if (displayCount > 1) {
+            line.append(styledLookupText(" x" + displayCount, Formatting.DARK_AQUA, event.rolledBack()));
+        }
         if (!target.isBlank()) {
             line.append(styledLookupText(" " + target, Formatting.DARK_AQUA, event.rolledBack()));
         }
@@ -934,10 +938,6 @@ public final class LookupService {
             return COMMAND_PREFIX + Phrase.build(Phrase.NO_DATA, blockName);
         }
         return fallback;
-    }
-
-    private Text itemLabelText(LoggedItemChange change, String label, Formatting color) {
-        return itemLabelText(change, label, color, false);
     }
 
     private Text itemLabelText(LoggedItemChange change, String label, Formatting color, boolean strikethrough) {
