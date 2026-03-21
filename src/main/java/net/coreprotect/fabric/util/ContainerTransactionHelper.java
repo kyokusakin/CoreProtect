@@ -1,6 +1,7 @@
 package net.coreprotect.fabric.util;
 
 import net.minecraft.item.ItemStack;
+import net.minecraft.registry.RegistryWrapper;
 
 import java.util.List;
 import java.util.Map;
@@ -10,8 +11,16 @@ public final class ContainerTransactionHelper {
     }
 
     public static List<ContainerDelta> diff(ItemStack before, ItemStack after) {
-        Map<LoggedItemData, Integer> beforeSnapshot = ItemDeltaSnapshot.snapshotStacks(List.of(before == null ? ItemStack.EMPTY : before));
-        Map<LoggedItemData, Integer> afterSnapshot = ItemDeltaSnapshot.snapshotStacks(List.of(after == null ? ItemStack.EMPTY : after));
+        return diff(before, after, null);
+    }
+
+    public static List<ContainerDelta> diff(ItemStack before, ItemStack after, RegistryWrapper.WrapperLookup lookup) {
+        Map<LoggedItemData, Integer> beforeSnapshot = lookup == null
+            ? ItemDeltaSnapshot.snapshotStacks(List.of(before == null ? ItemStack.EMPTY : before))
+            : ItemDeltaSnapshot.snapshotStacks(List.of(before == null ? ItemStack.EMPTY : before), lookup);
+        Map<LoggedItemData, Integer> afterSnapshot = lookup == null
+            ? ItemDeltaSnapshot.snapshotStacks(List.of(after == null ? ItemStack.EMPTY : after))
+            : ItemDeltaSnapshot.snapshotStacks(List.of(after == null ? ItemStack.EMPTY : after), lookup);
         return diff(beforeSnapshot, afterSnapshot);
     }
 

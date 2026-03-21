@@ -2701,10 +2701,10 @@ public final class CoreProtectDatabase implements AutoCloseable {
         if (record.type() == CoreProtectEventType.ENTITY_KILL && payload != null && !payload.isBlank()) {
             long existingEntityKey = parseEntityKey(payload);
             if (existingEntityKey > 0L) {
-                return new PreparedEventPayload(payload, existingEntityKey);
+                return new PreparedEventPayload("entity_key=" + existingEntityKey, existingEntityKey);
             }
             long entityKey = insertEntityPayload(payload, record.timestamp());
-            return new PreparedEventPayload("entity_key=" + entityKey + "\n" + payload, entityKey);
+            return new PreparedEventPayload("entity_key=" + entityKey, entityKey);
         }
         return new PreparedEventPayload(payload, null);
     }

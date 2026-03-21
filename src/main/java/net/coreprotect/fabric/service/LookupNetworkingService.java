@@ -90,7 +90,7 @@ public final class LookupNetworkingService {
             case BLOCK_PLACE, ENTITY_PLACE -> new LookupNetworkPayload(selectorWord(Phrase.LOOKUP_BLOCK, Selector.FIRST, "placed"), simplifyIdentifier(event.target()), -1, false, true);
             case BLOCK_BREAK, ENTITY_BREAK -> new LookupNetworkPayload(selectorWord(Phrase.LOOKUP_BLOCK, Selector.SECOND, "broke"), simplifyIdentifier(event.target()), -1, false, false);
             case BLOCK_USE, ENTITY_USE -> {
-                int clickCount = InteractionAggregatePayload.clickCount(event.payload());
+                int clickCount = InteractionAggregatePayload.displayCount(event.type(), event.payload());
                 yield new LookupNetworkPayload(
                     selectorWord(Phrase.LOOKUP_INTERACTION, Selector.FIRST, "clicked"),
                     simplifyIdentifier(event.target()),

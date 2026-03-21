@@ -29,6 +29,7 @@ import net.minecraft.entity.vehicle.AbstractMinecartEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.registry.Registries;
+import net.minecraft.registry.RegistryWrapper;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.command.ServerCommandSource;
@@ -568,19 +569,24 @@ public final class FabricEventLogger {
     }
 
     public void logContainerTransaction(ServerPlayerEntity player, String worldKey, BlockPos pos, String containerType, int slotIndex, int button, SlotActionType actionType, ItemStack beforeSlot, ItemStack afterSlot, ItemStack beforeCursor, ItemStack afterCursor) {
-        logContainerTransaction(player.getUuidAsString(), player.getName().getString(), worldKey, pos, containerType, slotIndex, button, actionType, beforeSlot, afterSlot, beforeCursor, afterCursor);
+        RegistryWrapper.WrapperLookup lookup = ((ServerWorld) player.getEntityWorld()).getRegistryManager();
+        logContainerTransaction(player.getUuidAsString(), player.getName().getString(), worldKey, pos, containerType, slotIndex, button, actionType, beforeSlot, afterSlot, beforeCursor, afterCursor, lookup);
     }
 
     public void logContainerTransaction(String actorName, String worldKey, BlockPos pos, String containerType, int slotIndex, int button, SlotActionType actionType, ItemStack beforeSlot, ItemStack afterSlot, ItemStack beforeCursor, ItemStack afterCursor) {
-        logContainerTransaction(null, actorName, worldKey, pos, containerType, slotIndex, button, actionType, beforeSlot, afterSlot, beforeCursor, afterCursor);
+        logContainerTransaction(null, actorName, worldKey, pos, containerType, slotIndex, button, actionType, beforeSlot, afterSlot, beforeCursor, afterCursor, null);
     }
 
     public void logContainerTransaction(String actorUuid, String actorName, String worldKey, BlockPos pos, String containerType, int slotIndex, int button, SlotActionType actionType, ItemStack beforeSlot, ItemStack afterSlot, ItemStack beforeCursor, ItemStack afterCursor) {
+        logContainerTransaction(actorUuid, actorName, worldKey, pos, containerType, slotIndex, button, actionType, beforeSlot, afterSlot, beforeCursor, afterCursor, null);
+    }
+
+    private void logContainerTransaction(String actorUuid, String actorName, String worldKey, BlockPos pos, String containerType, int slotIndex, int button, SlotActionType actionType, ItemStack beforeSlot, ItemStack afterSlot, ItemStack beforeCursor, ItemStack afterCursor, RegistryWrapper.WrapperLookup lookup) {
         if (!configFor(worldKey).itemTransactions()) {
             return;
         }
 
-        for (ContainerTransactionHelper.ContainerDelta delta : ContainerTransactionHelper.diff(beforeSlot, afterSlot)) {
+        for (ContainerTransactionHelper.ContainerDelta delta : ContainerTransactionHelper.diff(beforeSlot, afterSlot, lookup)) {
             logContainerChange(actorUuid, actorName, worldKey, pos, containerType, delta.item(), delta.count(), delta.added());
         }
     }
@@ -888,6 +894,7 @@ public final class FabricEventLogger {
     }
 
     private String serializeEntityState(Entity entity) {
+        ServerWorld serverWorld = entity.getEntityWorld() instanceof ServerWorld resolvedWorld ? resolvedWorld : null;
         StringBuilder payload = new StringBuilder();
         payload.append("type=").append(describeEntityType(entity));
         payload.append('\n').append("uuid=").append(entity.getUuidAsString());
@@ -897,11 +904,11 @@ public final class FabricEventLogger {
         }
         if (entity instanceof ItemFrameEntity) {
             ItemFrameEntity itemFrameEntity = (ItemFrameEntity) entity;
-            payload.append('\n').append("item=").append(describeStack(itemFrameEntity.getHeldItemStack()))
+            payload.append('\n').append("item=").append(serializeStackPayload(serverWorld, itemFrameEntity.getHeldItemStack()))
                 .append('\n').append("rotation=").append(itemFrameEntity.getRotation());
         }
         if (entity instanceof ArmorStandEntity) {
-            appendArmorStandPayload(payload, (ArmorStandEntity) entity, '\n');
+            appendArmorStandPayload(payload, (ArmorStandEntity) entity, serverWorld, '\n');
         }
         if (entity instanceof AbstractBoatEntity || entity instanceof AbstractMinecartEntity) {
             payload.append('\n').append("yaw=").append(Math.round(entity.getYaw()));
@@ -940,7 +947,7 @@ public final class FabricEventLogger {
             NbtWriteView writeView = NbtWriteView.create(new ErrorReporter.Impl(entity.getErrorReporterContext()), serverWorld.getRegistryManager());
             entity.saveSelfData(writeView);
             nbt.copyFrom(writeView.getNbt());
-            nbt.remove("UUID");
+            sanitizeEntityLogNbt(nbt);
             String serialized = nbt.toString();
             if (serialized.length() > MAX_ENTITY_NBT_LENGTH) {
                 return "";
@@ -951,6 +958,17 @@ public final class FabricEventLogger {
             logger.debug("Unable to serialize entity NBT for {}", describeEntityType(entity), exception);
             return "";
         }
+    }
+
+    private void sanitizeEntityLogNbt(NbtCompound entityNbt) {
+        entityNbt.remove("UUID");
+        entityNbt.remove("Pos");
+        entityNbt.remove("Motion");
+        entityNbt.remove("Rotation");
+        entityNbt.remove("Passengers");
+        entityNbt.remove("Brain");
+        entityNbt.remove("Fire");
+        entityNbt.remove("HasVisualFire");
     }
 
     private String serializeEntityKill(Entity killer, Entity actor, LivingEntity killedEntity, DamageSource damageSource) {
@@ -1098,13 +1116,13 @@ public final class FabricEventLogger {
         return "#" + simplifyIdentifier(name);
     }
 
-    private void appendArmorStandPayload(StringBuilder builder, ArmorStandEntity armorStand, char separator) {
+    private void appendArmorStandPayload(StringBuilder builder, ArmorStandEntity armorStand, ServerWorld world, char separator) {
         appendArmorStandBoolean(builder, "ShowArms", armorStand.shouldShowArms(), separator);
         appendArmorStandBoolean(builder, "Small", armorStand.isSmall(), separator);
         appendArmorStandBoolean(builder, "NoBasePlate", !armorStand.shouldShowBasePlate(), separator);
         appendArmorStandBoolean(builder, "Marker", armorStand.isMarker(), separator);
         appendArmorStandBoolean(builder, "Invisible", armorStand.isInvisible(), separator);
-        appendArmorStandEquipment(builder, armorStand, separator);
+        appendArmorStandEquipmentPayload(builder, armorStand, world, separator);
     }
 
     private void appendArmorStandSummary(StringBuilder builder, ArmorStandEntity armorStand, char separator) {
@@ -1113,16 +1131,25 @@ public final class FabricEventLogger {
         appendArmorStandBooleanIfTrue(builder, "NoBasePlate", !armorStand.shouldShowBasePlate(), separator);
         appendArmorStandBooleanIfTrue(builder, "Marker", armorStand.isMarker(), separator);
         appendArmorStandBooleanIfTrue(builder, "Invisible", armorStand.isInvisible(), separator);
-        appendArmorStandEquipment(builder, armorStand, separator);
+        appendArmorStandEquipmentSummary(builder, armorStand, separator);
     }
 
-    private void appendArmorStandEquipment(StringBuilder builder, ArmorStandEntity armorStand, char separator) {
-        appendEquipment(builder, "feet", armorStand.getEquippedStack(EquipmentSlot.FEET), separator);
-        appendEquipment(builder, "legs", armorStand.getEquippedStack(EquipmentSlot.LEGS), separator);
-        appendEquipment(builder, "chest", armorStand.getEquippedStack(EquipmentSlot.CHEST), separator);
-        appendEquipment(builder, "head", armorStand.getEquippedStack(EquipmentSlot.HEAD), separator);
-        appendEquipment(builder, "mainhand", armorStand.getEquippedStack(EquipmentSlot.MAINHAND), separator);
-        appendEquipment(builder, "offhand", armorStand.getEquippedStack(EquipmentSlot.OFFHAND), separator);
+    private void appendArmorStandEquipmentPayload(StringBuilder builder, ArmorStandEntity armorStand, ServerWorld world, char separator) {
+        appendEquipmentPayload(builder, "feet", armorStand.getEquippedStack(EquipmentSlot.FEET), world, separator);
+        appendEquipmentPayload(builder, "legs", armorStand.getEquippedStack(EquipmentSlot.LEGS), world, separator);
+        appendEquipmentPayload(builder, "chest", armorStand.getEquippedStack(EquipmentSlot.CHEST), world, separator);
+        appendEquipmentPayload(builder, "head", armorStand.getEquippedStack(EquipmentSlot.HEAD), world, separator);
+        appendEquipmentPayload(builder, "mainhand", armorStand.getEquippedStack(EquipmentSlot.MAINHAND), world, separator);
+        appendEquipmentPayload(builder, "offhand", armorStand.getEquippedStack(EquipmentSlot.OFFHAND), world, separator);
+    }
+
+    private void appendArmorStandEquipmentSummary(StringBuilder builder, ArmorStandEntity armorStand, char separator) {
+        appendEquipmentSummary(builder, "feet", armorStand.getEquippedStack(EquipmentSlot.FEET), separator);
+        appendEquipmentSummary(builder, "legs", armorStand.getEquippedStack(EquipmentSlot.LEGS), separator);
+        appendEquipmentSummary(builder, "chest", armorStand.getEquippedStack(EquipmentSlot.CHEST), separator);
+        appendEquipmentSummary(builder, "head", armorStand.getEquippedStack(EquipmentSlot.HEAD), separator);
+        appendEquipmentSummary(builder, "mainhand", armorStand.getEquippedStack(EquipmentSlot.MAINHAND), separator);
+        appendEquipmentSummary(builder, "offhand", armorStand.getEquippedStack(EquipmentSlot.OFFHAND), separator);
     }
 
     private void appendArmorStandBoolean(StringBuilder builder, String key, boolean value, char separator) {
@@ -1136,12 +1163,35 @@ public final class FabricEventLogger {
         appendArmorStandBoolean(builder, key, true, separator);
     }
 
-    private void appendEquipment(StringBuilder builder, String slot, ItemStack stack, char separator) {
+    private void appendEquipmentPayload(StringBuilder builder, String slot, ItemStack stack, ServerWorld world, char separator) {
+        String serializedStack = serializeStackPayload(world, stack);
+        if (serializedStack.isBlank()) {
+            return;
+        }
+
+        builder.append(separator).append(slot).append("=").append(serializedStack);
+    }
+
+    private void appendEquipmentSummary(StringBuilder builder, String slot, ItemStack stack, char separator) {
         if (stack == null || stack.isEmpty()) {
             return;
         }
 
         builder.append(separator).append(slot).append("=").append(describeStack(stack));
+    }
+
+    private String serializeStackPayload(ServerWorld world, ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return "";
+        }
+
+        String serialized = LoggedItemData.fromStack(stack, world == null ? null : world.getRegistryManager()).serializedStack();
+        if (serialized != null && !serialized.isBlank()) {
+            return serialized;
+        }
+
+        String itemKey = Registries.ITEM.getId(stack.getItem()).toString();
+        return itemKey + "x" + stack.getCount();
     }
 
     private String simplifyIdentifier(String value) {

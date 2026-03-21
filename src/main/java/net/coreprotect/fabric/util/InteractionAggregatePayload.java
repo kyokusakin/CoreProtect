@@ -1,5 +1,7 @@
 package net.coreprotect.fabric.util;
 
+import net.coreprotect.fabric.log.CoreProtectEventType;
+
 public final class InteractionAggregatePayload {
     private static final String CLICK_COUNT_KEY = "__cp_click_count";
     private static final String CLICK_START_KEY = "__cp_click_start";
@@ -20,6 +22,25 @@ public final class InteractionAggregatePayload {
         catch (NumberFormatException ignored) {
             return 1;
         }
+    }
+
+    public static int displayCount(CoreProtectEventType type, String payload) {
+        if (!supportsDisplayCount(type)) {
+            return 1;
+        }
+        return clickCount(payload);
+    }
+
+    public static String appendDisplayCount(String target, CoreProtectEventType type, String payload) {
+        if (target == null || target.isBlank()) {
+            return target == null ? "" : target;
+        }
+
+        int count = displayCount(type, payload);
+        if (count <= 1) {
+            return target;
+        }
+        return target + " x" + count;
     }
 
     public static String stripMetadata(String payload) {
@@ -54,6 +75,10 @@ public final class InteractionAggregatePayload {
         appendMetadata(combined, CLICK_START_KEY, Long.toString(firstTimestamp));
         appendMetadata(combined, CLICK_END_KEY, Long.toString(lastTimestamp));
         return combined.toString();
+    }
+
+    private static boolean supportsDisplayCount(CoreProtectEventType type) {
+        return type == CoreProtectEventType.BLOCK_USE || type == CoreProtectEventType.ENTITY_USE;
     }
 
     private static String metadataValue(String payload, String key) {

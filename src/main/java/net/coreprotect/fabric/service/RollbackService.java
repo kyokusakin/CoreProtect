@@ -6,6 +6,7 @@ import net.coreprotect.fabric.db.StoredEventRecord;
 import net.coreprotect.fabric.log.CoreProtectEventType;
 import net.coreprotect.fabric.util.BlockStateSerializer;
 import net.coreprotect.fabric.util.LoggedItemChange;
+import net.coreprotect.fabric.util.LoggedItemData;
 import net.coreprotect.fabric.util.LoggedSignState;
 import net.coreprotect.fabric.util.QueryBounds;
 import net.coreprotect.fabric.config.CoreProtectFabricConfig;
@@ -2014,8 +2015,13 @@ public final class RollbackService {
         if (!change.item().displayName().isBlank() && !change.item().displayName().equals(stack.getName().getString())) {
             return false;
         }
-        return change.item().componentChanges().isBlank()
-            || change.item().componentChanges().equals(stack.getComponentChanges().toString());
+        if (change.item().componentChanges().isBlank()) {
+            return true;
+        }
+
+        String currentComponents = stack.getComponentChanges().toString();
+        return change.item().componentChanges().equals(currentComponents)
+            || change.item().componentChanges().equals(LoggedItemData.summarizeComponentChanges(currentComponents));
     }
 
     private boolean matchesRollbackItemKey(ItemStack stack, String itemKey) {
@@ -2380,4 +2386,3 @@ public final class RollbackService {
     }
 
 }
-
