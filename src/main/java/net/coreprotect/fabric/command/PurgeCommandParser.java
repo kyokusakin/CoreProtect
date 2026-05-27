@@ -64,6 +64,18 @@ public final class PurgeCommandParser {
         return new PurgeCommandOptions(seconds, worldFilter, includeTargets.isEmpty() ? null : includeTargets, optimize);
     }
 
+    public static int autoPurgeSeconds(String value) {
+        if (value == null) {
+            return 0;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty() || trimmed.equalsIgnoreCase("false") || trimmed.equalsIgnoreCase("disabled") || trimmed.equals("0")) {
+            return 0;
+        }
+        Integer seconds = parseDuration(trimmed);
+        return seconds == null || seconds <= 0 ? 0 : seconds;
+    }
+
     public static String findUnsupportedArgument(String input) {
         if (input == null || input.isBlank()) {
             return null;

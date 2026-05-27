@@ -545,6 +545,10 @@ public final class CoreProtectCommands {
 
         int pending = runtime.database().pendingWrites();
         sendLine(source, Phrase.build(Phrase.STATUS_CONSUMER, NumberFormat.getInstance().format(pending), pending == 1 ? Selector.FIRST : Selector.SECOND));
+        if (runtime.autoPurge() != null && runtime.autoPurge().isEnabled()) {
+            long autoPurged = runtime.autoPurge().rowsPurgedSinceRestart();
+            sendLine(source, Phrase.build(Phrase.STATUS_AUTO_PURGE, NumberFormat.getInstance().format(autoPurged), autoPurged == 1 ? Selector.FIRST : Selector.SECOND));
+        }
         sendLine(source, Phrase.build(Phrase.STATUS_SYSTEM, runtime.logger().buildStatusSummary()));
         sendLine(source, Phrase.build(Phrase.LINK_DISCORD, "www.coreprotect.net/discord/"));
         sendLine(source, Phrase.build(Phrase.LINK_PATREON, "www.patreon.com/coreprotect/"));

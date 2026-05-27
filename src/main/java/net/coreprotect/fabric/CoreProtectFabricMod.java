@@ -75,6 +75,9 @@ public final class CoreProtectFabricMod implements DedicatedServerModInitializer
             if (currentRuntime.rollback() != null) {
                 currentRuntime.rollback().tick(server);
             }
+            if (currentRuntime.autoPurge() != null) {
+                currentRuntime.autoPurge().tick();
+            }
         });
 
         ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {

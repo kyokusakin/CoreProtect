@@ -78,6 +78,7 @@ public final class CoreProtectFabricConfig {
     private final int defaultRadius;
     private final int maxRadius;
     private final String donationKey;
+    private final String autoPurge;
 
     public CoreProtectFabricConfig(
         DatabaseType databaseType,
@@ -127,7 +128,8 @@ public final class CoreProtectFabricConfig {
         boolean networkDebug,
         int defaultRadius,
         int maxRadius,
-        String donationKey
+        String donationKey,
+        String autoPurge
     ) {
         this.databaseType = databaseType;
         this.databaseFile = databaseFile;
@@ -177,6 +179,7 @@ public final class CoreProtectFabricConfig {
         this.defaultRadius = defaultRadius;
         this.maxRadius = maxRadius;
         this.donationKey = donationKey;
+        this.autoPurge = autoPurge;
     }
 
     public String databaseFile() {
@@ -371,6 +374,10 @@ public final class CoreProtectFabricConfig {
         return donationKey;
     }
 
+    public String autoPurge() {
+        return autoPurge;
+    }
+
     public static CoreProtectFabricConfig loadDefaults() {
         return fromProperties(defaultProperties());
     }
@@ -436,7 +443,8 @@ public final class CoreProtectFabricConfig {
             networkDebug,
             defaultRadius,
             maxRadius,
-            donationKey
+            donationKey,
+            autoPurge
         );
     }
 
@@ -496,6 +504,7 @@ public final class CoreProtectFabricConfig {
         properties.setProperty("default-radius", Integer.toString(defaultRadius));
         properties.setProperty("max-radius", Integer.toString(maxRadius));
         properties.setProperty("donation-key", donationKey == null ? "" : donationKey);
+        properties.setProperty("auto-purge", autoPurge == null ? "false" : autoPurge);
         return properties;
     }
 
@@ -549,6 +558,7 @@ public final class CoreProtectFabricConfig {
         defaults.setProperty("default-radius", "10");
         defaults.setProperty("max-radius", "100");
         defaults.setProperty("donation-key", "");
+        defaults.setProperty("auto-purge", "false");
         return defaults;
     }
 
@@ -616,7 +626,8 @@ public final class CoreProtectFabricConfig {
             Boolean.parseBoolean(properties.getProperty("network-debug")),
             readInt(properties, "default-radius", null, 10),
             readInt(properties, "max-radius", null, 100),
-            properties.getProperty("donation-key", "")
+            properties.getProperty("donation-key", ""),
+            properties.getProperty("auto-purge", "false")
         );
     }
 

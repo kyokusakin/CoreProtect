@@ -8,6 +8,7 @@ import net.coreprotect.fabric.service.InspectorService;
 import net.coreprotect.fabric.service.LookupService;
 import net.coreprotect.fabric.service.LookupSessionService;
 import net.coreprotect.fabric.service.PreviewService;
+import net.coreprotect.fabric.service.AutoPurgeService;
 import net.coreprotect.fabric.service.RollbackService;
 import net.coreprotect.fabric.service.UndoSessionService;
 import net.coreprotect.fabric.service.BlacklistService;
@@ -50,6 +51,7 @@ public final class FabricRuntime {
     private InspectorService inspectorService;
     private RollbackService rollbackService;
     private UpdateCheckService updateCheckService;
+    private AutoPurgeService autoPurgeService;
     private AutoCloseable worldEditIntegration;
 
     public FabricRuntime(Logger logger) {
@@ -84,6 +86,7 @@ public final class FabricRuntime {
             rollbackService = new RollbackService(database, worldConfigs, logger);
             updateCheckService = new UpdateCheckService(logger);
             updateCheckService.refreshAsync(config.checkUpdates());
+            autoPurgeService = new AutoPurgeService(this, logger);
             worldEditIntegration = registerOptionalWorldEditIntegration();
             logger.info("CoreProtect initialized at {} (database root: {})", rootDirectory.toAbsolutePath(), databaseRootDirectory.toAbsolutePath());
         }
@@ -103,6 +106,10 @@ public final class FabricRuntime {
         }
         closeOptionalIntegration(worldEditIntegration, "WorldEdit");
         worldEditIntegration = null;
+        if (autoPurgeService != null) {
+            autoPurgeService.shutdown();
+            autoPurgeService = null;
+        }
         TransientLookupCache.clear();
         database.close();
         database = null;
@@ -243,6 +250,10 @@ public final class FabricRuntime {
 
     public UpdateCheckService updates() {
         return updateCheckService;
+    }
+
+    public AutoPurgeService autoPurge() {
+        return autoPurgeService;
     }
 
     public synchronized int swapDatabase(CoreProtectFabricConfig newConfig, CoreProtectDatabase newDatabase) {
