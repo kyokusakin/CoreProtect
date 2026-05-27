@@ -60,6 +60,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: CoreProtect Fabric v${{ steps.meta.outputs.version }}
           prerelease: true
-          generate_release_notes: true
+          body: |
+            **Full Changelog**: https://github.com/${{ github.repository }}/commits/fabric-v${{ steps.meta.outputs.version }}
           files: release/*.jar
           fail_on_unmatched_files: true
