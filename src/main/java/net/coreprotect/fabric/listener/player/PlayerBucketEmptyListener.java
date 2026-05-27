@@ -22,7 +22,9 @@ public final class PlayerBucketEmptyListener {
 
         BlockState placedState = world.getBlockState(pos);
         if (fluid != null && placedState.getFluidState().isEmpty() && placedState.isAir()) {
-            placedState = fluid.getDefaultState().getBlockState();
+            // Fluid never settled (e.g. water evaporates instantly in ultrawarm dimensions like the Nether).
+            // Logging a phantom water/lava placement here would make rollbacks restore a block that never existed.
+            return;
         }
 
         CoreProtectFabricMod.logBlockPlace(player, world, pos, placedState);

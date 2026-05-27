@@ -1378,11 +1378,19 @@ public final class CoreProtectCommands {
         }
 
         sendCoreProtectPhrase(source, Phrase.MISSING_PARAMETERS, "/co purge t:<time>");
+        sendLine(source, "t:<time> - " + Phrase.build(Phrase.HELP_PURGE_3));
+        sendLine(source, "r:<world> - " + Phrase.build(Phrase.HELP_PURGE_4));
+        sendLine(source, "i:<include> - " + Phrase.build(Phrase.HELP_PURGE_5));
         sendLine(source, Phrase.build(Phrase.HELP_PURGE_2, "/co purge t:30d"));
         return 1;
     }
 
     private static int runPurgeFromInput(ServerCommandSource source, FabricRuntime runtime, String input) {
+        String unsupportedArgument = PurgeCommandParser.findUnsupportedArgument(input);
+        if (unsupportedArgument != null) {
+            sendCoreProtectPhrase(source, Phrase.INVALID_PARAMETER, unsupportedArgument);
+            return sendPurgeUsage(source);
+        }
         PurgeCommandOptions options = PurgeCommandParser.parse(input);
         if (options.isEmpty() || options.seconds() == null) {
             return sendPurgeUsage(source);

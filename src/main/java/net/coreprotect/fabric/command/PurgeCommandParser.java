@@ -64,6 +64,43 @@ public final class PurgeCommandParser {
         return new PurgeCommandOptions(seconds, worldFilter, includeTargets.isEmpty() ? null : includeTargets, optimize);
     }
 
+    public static String findUnsupportedArgument(String input) {
+        if (input == null || input.isBlank()) {
+            return null;
+        }
+
+        boolean includeContinuation = false;
+        for (String rawToken : input.trim().split("\\s+")) {
+            String token = normalize(rawToken);
+            if (token.isBlank()) {
+                continue;
+            }
+
+            if (includeContinuation) {
+                includeContinuation = token.endsWith(",");
+                continue;
+            }
+
+            if ("#optimize".equalsIgnoreCase(token) || "optimize".equalsIgnoreCase(token)) {
+                continue;
+            }
+
+            PrefixToken prefixToken = parsePrefixToken(token);
+            if (prefixToken != null) {
+                if (prefixToken.mode() == Mode.INCLUDE) {
+                    includeContinuation = prefixToken.value().isBlank() || prefixToken.value().endsWith(",");
+                }
+                continue;
+            }
+
+            if (token.contains(":")) {
+                return rawToken.trim();
+            }
+        }
+
+        return null;
+    }
+
     private static boolean appendCsvValues(List<String> target, String token) {
         String cleaned = stripTrailingComma(token);
         if (!cleaned.isBlank()) {

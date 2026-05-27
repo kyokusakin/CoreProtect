@@ -28,6 +28,7 @@ import net.minecraft.entity.vehicle.AbstractBoatEntity;
 import net.minecraft.entity.vehicle.AbstractMinecartEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NbtCompound;
+import net.minecraft.nbt.NbtList;
 import net.minecraft.registry.Registries;
 import net.minecraft.registry.RegistryWrapper;
 import net.minecraft.screen.slot.SlotActionType;
@@ -47,6 +48,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 public final class FabricEventLogger {
@@ -966,9 +968,45 @@ public final class FabricEventLogger {
         entityNbt.remove("Motion");
         entityNbt.remove("Rotation");
         entityNbt.remove("Passengers");
-        entityNbt.remove("Brain");
+        retainStableBrainMemories(entityNbt);
         entityNbt.remove("Fire");
         entityNbt.remove("HasVisualFire");
+        sanitizeVillagerOffers(entityNbt);
+    }
+
+    private static final Set<String> RESTORABLE_BRAIN_MEMORIES = Set.of("minecraft:job_site", "minecraft:meeting_point");
+
+    public static void retainStableBrainMemories(NbtCompound entityNbt) {
+        if (!entityNbt.contains("Brain")) {
+            return;
+        }
+        // The brain holds volatile, position-bound AI state we never want to restore, except the
+        // job site / meeting point — those make a rolled-back villager remember its workstation (upstream #753).
+        NbtCompound memories = entityNbt.getCompoundOrEmpty("Brain").getCompoundOrEmpty("memories");
+        NbtCompound retained = new NbtCompound();
+        for (String key : memories.getKeys()) {
+            if (RESTORABLE_BRAIN_MEMORIES.contains(key)) {
+                retained.put(key, memories.getCompoundOrEmpty(key).copy());
+            }
+        }
+        entityNbt.remove("Brain");
+        if (!retained.isEmpty()) {
+            NbtCompound brain = new NbtCompound();
+            brain.put("memories", retained);
+            entityNbt.put("Brain", brain);
+        }
+    }
+
+    private void sanitizeVillagerOffers(NbtCompound entityNbt) {
+        if (!entityNbt.contains("Offers")) {
+            return;
+        }
+        // "specialPrice" is a transient, per-customer price adjustment. Persisting and restoring it on
+        // rollback re-applies stale discounts/surcharges, so drop it like upstream does.
+        NbtList recipes = entityNbt.getCompoundOrEmpty("Offers").getListOrEmpty("Recipes");
+        for (int index = 0; index < recipes.size(); index++) {
+            recipes.getCompoundOrEmpty(index).remove("specialPrice");
+        }
     }
 
     private String serializeEntityKill(Entity killer, Entity actor, LivingEntity killedEntity, DamageSource damageSource) {

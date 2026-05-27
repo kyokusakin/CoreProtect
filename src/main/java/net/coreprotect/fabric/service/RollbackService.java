@@ -4,6 +4,7 @@ import net.coreprotect.fabric.db.CoreProtectDatabase;
 import net.coreprotect.fabric.db.PendingInventoryRollbackRecord;
 import net.coreprotect.fabric.db.StoredEventRecord;
 import net.coreprotect.fabric.log.CoreProtectEventType;
+import net.coreprotect.fabric.log.FabricEventLogger;
 import net.coreprotect.fabric.util.BlockStateSerializer;
 import net.coreprotect.fabric.util.LoggedItemChange;
 import net.coreprotect.fabric.util.LoggedItemData;
@@ -816,6 +817,13 @@ public final class RollbackService {
             && Boolean.TRUE.equals(currentState.get(Properties.WATERLOGGED))) {
             return Blocks.WATER.getDefaultState();
         }
+        if (targetState.isOf(Blocks.NOTE_BLOCK)
+            && targetState.contains(Properties.POWERED)
+            && Boolean.TRUE.equals(targetState.get(Properties.POWERED))) {
+            // The powered flag is derived from redstone neighbours; restoring a stale "true" leaves
+            // a note block that looks powered until the next neighbour update. Normalise it like upstream.
+            return targetState.with(Properties.POWERED, false);
+        }
         return targetState;
     }
 
@@ -1486,7 +1494,7 @@ public final class RollbackService {
         entityNbt.remove("Motion");
         entityNbt.remove("Rotation");
         entityNbt.remove("Passengers");
-        entityNbt.remove("Brain");
+        FabricEventLogger.retainStableBrainMemories(entityNbt);
         entityNbt.remove("Fire");
         entityNbt.remove("HasVisualFire");
     }
