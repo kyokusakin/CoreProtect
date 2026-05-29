@@ -1,6 +1,8 @@
 package net.coreprotect.fabric.service.inspector;
 
 import net.coreprotect.fabric.log.CoreProtectEventType;
+import net.coreprotect.fabric.permission.CoreProtectPermissions;
+import net.coreprotect.fabric.service.GiveRenderContext;
 import net.coreprotect.fabric.service.LookupNetworkingService;
 import net.coreprotect.fabric.service.LookupService;
 import net.coreprotect.language.Phrase;
@@ -29,7 +31,8 @@ public final class ContainerInspector {
         String emptyMessage = "CoreProtect - " + Phrase.build(Phrase.NO_DATA_LOCATION, Selector.SECOND);
         List<CoreProtectEventType> eventTypes = List.of(CoreProtectEventType.CONTAINER_TRANSACTION);
         BlockPos lookupPos = canonicalizeContainerPos(world, pos);
-        List<Text> lines = lookupService.describeBlockHistory(world, lookupPos, 7, eventTypes, title, emptyMessage);
+        boolean offerGive = CoreProtectPermissions.canUseGive(player.getCommandSource(), false);
+        List<Text> lines = GiveRenderContext.withGive(offerGive, () -> lookupService.describeBlockHistory(world, lookupPos, 7, eventTypes, title, emptyMessage));
         for (Text line : lines) {
             player.sendMessage(line, false);
         }

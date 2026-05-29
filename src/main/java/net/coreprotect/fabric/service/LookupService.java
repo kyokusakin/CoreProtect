@@ -7,6 +7,7 @@ import net.coreprotect.fabric.language.PhraseService;
 import net.coreprotect.language.Phrase;
 import net.coreprotect.language.Selector;
 import net.coreprotect.fabric.log.CoreProtectEventType;
+import net.coreprotect.fabric.util.GivableItemRegistry;
 import net.coreprotect.fabric.util.InteractionAggregatePayload;
 import net.coreprotect.fabric.util.LoggedSignState;
 import net.coreprotect.fabric.util.LoggedItemChange;
@@ -41,6 +42,7 @@ import java.util.StringJoiner;
 
 public final class LookupService {
     private static final String COMMAND_PREFIX = "CoreProtect - ";
+    private static final String GIVE_COMMAND = "/co give";
     private static final DateTimeFormatter TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z");
     private static final DecimalFormat ELAPSED_DECIMAL = new DecimalFormat("0.00", new DecimalFormatSymbols(java.util.Locale.ROOT));
     private static final double TARGET_DISTANCE = 20.0D;
@@ -749,8 +751,9 @@ public final class LookupService {
             .append(Text.literal(tagColor == Formatting.GREEN ? "+ " : "- ").formatted(tagColor))
             .append(styledLookupText(actor, Formatting.AQUA, event.rolledBack()))
             .append(styledLookupText(" " + verb + " " + amount + " ", Formatting.WHITE, event.rolledBack()))
-            .append(itemLabelText(itemChange, itemLabel, Formatting.DARK_AQUA, event.rolledBack()))
-            .append(styledLookupText(".", Formatting.WHITE, event.rolledBack()));
+            .append(itemLabelText(itemChange, itemLabel, Formatting.DARK_AQUA, event.rolledBack()));
+        appendGiveComponent(line, itemChange);
+        line.append(styledLookupText(".", Formatting.WHITE, event.rolledBack()));
         return line;
     }
 
@@ -767,8 +770,9 @@ public final class LookupService {
             .append(Text.literal(delta.added() ? "+ " : "- ").formatted(delta.added() ? Formatting.GREEN : Formatting.RED))
             .append(styledLookupText(actor, Formatting.AQUA, event.rolledBack()))
             .append(styledLookupText(" " + verb + " x" + delta.amount() + " ", Formatting.WHITE, event.rolledBack()))
-            .append(itemLabelText(delta.change(), delta.target(), Formatting.DARK_AQUA, event.rolledBack()))
-            .append(styledLookupText(".", Formatting.WHITE, event.rolledBack()));
+            .append(itemLabelText(delta.change(), delta.target(), Formatting.DARK_AQUA, event.rolledBack()));
+        appendGiveComponent(line, delta.change());
+        line.append(styledLookupText(".", Formatting.WHITE, event.rolledBack()));
         return line;
     }
 
@@ -948,6 +952,29 @@ public final class LookupService {
         return styledLookupText(label, color, strikethrough).styled(style -> style
             .withHoverEvent(new HoverEvent.ShowText(Text.literal(itemTooltip(change))))
         );
+    }
+
+    private void appendGiveComponent(MutableText line, LoggedItemChange change) {
+        if (!GiveRenderContext.isEnabled() || change == null) {
+            return;
+        }
+
+        String serializedStack = change.item().serializedStack();
+        if (serializedStack == null || serializedStack.isBlank()) {
+            return;
+        }
+
+        Integer itemId = GivableItemRegistry.register(serializedStack, change.count());
+        if (itemId == null) {
+            return;
+        }
+
+        String command = GIVE_COMMAND + " #" + itemId;
+        line.append(Text.literal(" (↓)").styled(style -> style
+            .withColor(Formatting.GRAY)
+            .withClickEvent(new ClickEvent.RunCommand(command))
+            .withHoverEvent(new HoverEvent.ShowText(Text.literal(command)))
+        ));
     }
 
     private MutableText styledLookupText(String value, Formatting color, boolean strikethrough) {

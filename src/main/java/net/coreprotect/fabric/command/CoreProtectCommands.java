@@ -14,11 +14,13 @@ import net.coreprotect.fabric.permission.CoreProtectPermissions;
 import net.coreprotect.language.Phrase;
 import net.coreprotect.language.Selector;
 import net.coreprotect.fabric.service.DatabaseMigrationService;
+import net.coreprotect.fabric.service.GiveRenderContext;
 import net.coreprotect.fabric.service.LookupNetworkingService;
 import net.coreprotect.fabric.service.LookupSessionService;
 import net.coreprotect.fabric.service.RollbackService;
 import net.coreprotect.fabric.service.TeleportService;
 import net.coreprotect.fabric.service.UndoSessionService;
+import net.coreprotect.fabric.util.GivableItemRegistry;
 import net.coreprotect.fabric.util.QueryBounds;
 import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.block.entity.BrushableBlockEntity;
@@ -32,6 +34,7 @@ import net.minecraft.registry.RegistryKeys;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
+import net.minecraft.item.ItemStack;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.ClickEvent;
@@ -48,6 +51,8 @@ import java.math.RoundingMode;
 import java.text.NumberFormat;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -64,6 +69,7 @@ import java.util.function.Supplier;
 public final class CoreProtectCommands {
     private static final int DEFAULT_LOOKUP_LIMIT = 10;
     private static final int DEFAULT_LOOKUP_SECONDS = 3600;
+    private static final Pattern GIVABLE_ITEM_ID_PATTERN = Pattern.compile("#?([0-9]+)");
     private static final int DEFAULT_ROLLBACK_RADIUS = 10;
     private static final int DEFAULT_MAX_RADIUS = 100;
     private static final int PLAYER_PURGE_MIN_SECONDS = 30 * 24 * 60 * 60;
@@ -104,6 +110,7 @@ public final class CoreProtectCommands {
             .then(buildLookupCommand("lookup", runtime))
             .then(buildLookupCommand("l", runtime))
             .then(buildPageCommand(runtime))
+            .then(buildGiveCommand())
             .then(CommandManager.literal("near")
                 .requires(source -> CoreProtectPermissions.canLookupNearby(source, null, false))
                 .executes(context -> runLookup(context.getSource(), runtime, "r:5x5")))
@@ -132,6 +139,61 @@ public final class CoreProtectCommands {
             .executes(context -> sendHelp(context.getSource(), null))
             .then(CommandManager.argument("topic", StringArgumentType.word())
                 .executes(context -> sendHelp(context.getSource(), StringArgumentType.getString(context, "topic"))));
+    }
+
+    private static LiteralArgumentBuilder<ServerCommandSource> buildGiveCommand() {
+        return CommandManager.literal("give")
+            .requires(source -> CoreProtectPermissions.canUseGive(source, false))
+            .executes(context -> {
+                sendCoreProtectPhrase(context.getSource(), Phrase.MISSING_PARAMETERS, "/co give <itemId>");
+                return 0;
+            })
+            .then(CommandManager.argument("itemId", StringArgumentType.word())
+                .executes(context -> runGive(context.getSource(), StringArgumentType.getString(context, "itemId"))));
+    }
+
+    private static int runGive(ServerCommandSource source, String itemArgument) {
+        if (!CoreProtectPermissions.canUseGive(source, true)) {
+            return 0;
+        }
+
+        Integer itemId = parseGivableItemId(itemArgument);
+        if (itemId == null) {
+            sendCoreProtectPhrase(source, Phrase.MISSING_PARAMETERS, "/co give <itemId>");
+            return 0;
+        }
+
+        if (!(source.getEntity() instanceof ServerPlayerEntity player)) {
+            sendCoreProtectPhrase(source, Phrase.ACTION_NOT_SUPPORTED);
+            return 0;
+        }
+
+        ItemStack stack = GivableItemRegistry.resolve((ServerWorld) player.getEntityWorld(), itemId);
+        if (stack.isEmpty()) {
+            sendCoreProtectPhrase(source, Phrase.INVALID_ITEM_ID);
+            return 0;
+        }
+
+        player.getInventory().offerOrDrop(stack);
+        return 1;
+    }
+
+    private static Integer parseGivableItemId(String argument) {
+        if (argument == null) {
+            return null;
+        }
+
+        Matcher matcher = GIVABLE_ITEM_ID_PATTERN.matcher(argument);
+        if (!matcher.find()) {
+            return null;
+        }
+
+        try {
+            return Integer.parseInt(matcher.group(1));
+        }
+        catch (NumberFormatException exception) {
+            return null;
+        }
     }
 
     private static LiteralArgumentBuilder<ServerCommandSource> buildStatusCommand(String literal, FabricRuntime runtime) {
@@ -814,7 +876,8 @@ public final class CoreProtectCommands {
                     lookupIncludeTargets,
                     lookupExcludeTargets
                 );
-                List<Text> lines = runtime.lookup().renderScopedHistory(networkEvents);
+                boolean offerGive = CoreProtectPermissions.canUseGive(source, false);
+                List<Text> lines = GiveRenderContext.withGive(offerGive, () -> runtime.lookup().renderScopedHistory(networkEvents));
                 return new LookupRenderResult(lines, networkEvents, totalPages, total <= 0 ? Phrase.NO_RESULTS_PAGE : null);
             },
             result -> {
@@ -955,7 +1018,9 @@ public final class CoreProtectCommands {
                     query.includeTargets(),
                     query.excludeTargets()
                 );
-                return new LookupRenderResult(runtime.lookup().renderScopedHistory(networkEvents), networkEvents, totalPages, null);
+                boolean offerGive = CoreProtectPermissions.canUseGive(source, false);
+                List<Text> pageLines = GiveRenderContext.withGive(offerGive, () -> runtime.lookup().renderScopedHistory(networkEvents));
+                return new LookupRenderResult(pageLines, networkEvents, totalPages, null);
             },
             result -> {
                 if (result.emptyPhrase() != null) {

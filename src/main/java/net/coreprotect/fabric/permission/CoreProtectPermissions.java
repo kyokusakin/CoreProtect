@@ -41,6 +41,7 @@ public final class CoreProtectPermissions {
     public static final String CONSUMER = "coreprotect.consumer";
     public static final String NETWORKING = "coreprotect.networking";
     public static final String MIGRATE = "coreprotect.migrate-db";
+    public static final String GIVE = "coreprotect.give";
 
     private static final PermissionLevel LOOKUP_FALLBACK_LEVEL = PermissionLevel.fromLevel(2);
     private static final PermissionLevel INSPECT_FALLBACK_LEVEL = PermissionLevel.fromLevel(2);
@@ -78,6 +79,10 @@ public final class CoreProtectPermissions {
 
     public static boolean canUseHelp(ServerCommandSource source, boolean notify) {
         return checkAny(source, notify, HELP_FALLBACK_LEVEL, HELP, ALL);
+    }
+
+    public static boolean canUseGive(ServerCommandSource source, boolean notify) {
+        return checkAny(source, notify, ADMIN_FALLBACK_LEVEL, GIVE, ALL);
     }
 
     public static boolean canLookupBlock(ServerCommandSource source, boolean notify) {
