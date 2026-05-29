@@ -797,7 +797,7 @@ public final class RollbackService {
             return false;
         }
 
-        boolean changed = world.setBlockState(pos, targetState, Block.NOTIFY_ALL);
+        boolean changed = setBlockStateSafely(world, pos, targetState);
         if (!changed) {
             return false;
         }
@@ -805,6 +805,33 @@ public final class RollbackService {
         applyCompanionBlockCorrections(world, pos, currentState, targetState);
         reconcileAttachedDecorations(world, pos);
         return true;
+    }
+
+    /**
+     * Applies a block state during rollback while tolerating physics/neighbour update failures.
+     * <p>
+     * A full {@link Block#NOTIFY_ALL} update can trigger neighbour reactions that throw at runtime
+     * (e.g. a malformed multi-block or a broken redstone graph). Upstream CoreProtect guards the
+     * equivalent {@code setBlockData(..., true)} call and retries without physics so a single bad
+     * block doesn't abort the whole rollback. We mirror that: retry once with listener-only flags so
+     * the state still lands without propagating neighbour updates.
+     */
+    private boolean setBlockStateSafely(ServerWorld world, BlockPos pos, BlockState targetState) {
+        try {
+            return world.setBlockState(pos, targetState, Block.NOTIFY_ALL);
+        }
+        catch (RuntimeException exception) {
+            try {
+                boolean changed = world.setBlockState(pos, targetState, Block.NOTIFY_LISTENERS | Block.FORCE_STATE);
+                logger.debug("Applied {} without neighbour updates after a physics failure", pos, exception);
+                return changed;
+            }
+            catch (RuntimeException retryException) {
+                exception.addSuppressed(retryException);
+                logger.warn("Failed to apply block state at {} during rollback", pos, exception);
+                return false;
+            }
+        }
     }
 
     private BlockState normalizeRollbackTargetState(StoredEventRecord event, boolean restore, BlockState currentState, BlockState targetState) {
