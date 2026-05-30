@@ -1,6 +1,8 @@
 package net.coreprotect.fabric;
 
 import net.coreprotect.fabric.command.CoreProtectCommands;
+import net.coreprotect.fabric.command.CoreProtectText;
+import net.coreprotect.fabric.permission.CoreProtectPermissions;
 import net.coreprotect.fabric.api.CoreProtectFabric;
 import net.coreprotect.fabric.api.CoreProtectFabricAPI;
 import net.coreprotect.fabric.listener.channel.PluginChannelHandshakeListener;
@@ -9,6 +11,7 @@ import net.coreprotect.fabric.listener.player.PlayerInteractEntityListener;
 import net.coreprotect.fabric.listener.player.PlayerInteractUtils;
 import net.coreprotect.fabric.service.ContainerSessionService;
 import net.coreprotect.fabric.util.LoggedItemData;
+import net.coreprotect.language.Phrase;
 import net.fabricmc.api.DedicatedServerModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
@@ -103,6 +106,20 @@ public final class CoreProtectFabricMod implements DedicatedServerModInitializer
                 }
                 catch (RuntimeException exception) {
                     LOGGER.warn("Failed to apply pending inventory rollbacks for {}", handler.player.getName().getString(), exception);
+                }
+            }
+
+            var updateCheck = currentRuntime.updates();
+            if (updateCheck != null
+                && currentRuntime.config() != null
+                && currentRuntime.config().checkUpdates()
+                && updateCheck.isOutdated()
+                && CoreProtectPermissions.canUseStatus(handler.player.getCommandSource(), false)) {
+                try {
+                    sendUpdateNotice(handler.player, updateCheck.latestVersion());
+                }
+                catch (RuntimeException exception) {
+                    LOGGER.warn("Failed to send update notice to {}", handler.player.getName().getString(), exception);
                 }
             }
         });
@@ -249,6 +266,12 @@ public final class CoreProtectFabricMod implements DedicatedServerModInitializer
             runtime.logger().logServerStop(server);
         }
         runtime.shutdown();
+    }
+
+    private static void sendUpdateNotice(ServerPlayerEntity player, String latestVersion) {
+        player.sendMessage(CoreProtectText.header(Phrase.build(Phrase.UPDATE_HEADER, "CoreProtect")), false);
+        player.sendMessage(CoreProtectText.line(Phrase.build(Phrase.UPDATE_NOTICE, "CoreProtect v" + latestVersion)), false);
+        player.sendMessage(CoreProtectText.line(Phrase.build(Phrase.LINK_DOWNLOAD, "github.com/kyokusakin/CoreProtect/releases")), false);
     }
 
     public static void logBlockPlace(ServerPlayerEntity player, net.minecraft.server.world.ServerWorld world, net.minecraft.util.math.BlockPos pos, net.minecraft.block.BlockState state) {

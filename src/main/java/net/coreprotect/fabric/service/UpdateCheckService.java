@@ -9,6 +9,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
@@ -16,8 +17,7 @@ import java.util.regex.Pattern;
 
 public final class UpdateCheckService {
     private static final Pattern TAG_NAME_PATTERN = Pattern.compile("\"tag_name\"\\s*:\\s*\"([^\"]+)\"");
-    private static final String RELEASES_URL = "https://api.github.com/repos/PlayPro/CoreProtect/releases/latest";
-    private static final String TAGS_URL = "https://api.github.com/repos/PlayPro/CoreProtect/tags?per_page=1";
+    private static final String RELEASES_URL = "https://api.github.com/repos/kyokusakin/CoreProtect/releases/latest";
 
     private final Logger logger;
     private final String currentVersion;
@@ -72,12 +72,31 @@ public final class UpdateCheckService {
         return checked;
     }
 
-    private String fetchLatestVersion() throws IOException, InterruptedException {
-        String latest = fetchTagName(RELEASES_URL);
-        if (latest != null && !latest.isBlank()) {
-            return latest;
+    public boolean isOutdated() {
+        String latest = latestVersion;
+        if (!checked || latest == null || latest.isBlank()) {
+            return false;
         }
-        return fetchTagName(TAGS_URL);
+
+        int[] current = parseVersion(currentVersion);
+        int[] remote = parseVersion(latest);
+        if (current.length == 0 || remote.length == 0) {
+            return false;
+        }
+
+        int length = Math.max(current.length, remote.length);
+        for (int index = 0; index < length; index++) {
+            int a = index < current.length ? current[index] : 0;
+            int b = index < remote.length ? remote[index] : 0;
+            if (a != b) {
+                return a < b;
+            }
+        }
+        return false;
+    }
+
+    private String fetchLatestVersion() throws IOException, InterruptedException {
+        return fetchTagName(RELEASES_URL);
     }
 
     private String fetchTagName(String url) throws IOException, InterruptedException {
@@ -100,5 +119,19 @@ public final class UpdateCheckService {
             return null;
         }
         return matcher.group(1);
+    }
+
+    private static int[] parseVersion(String version) {
+        String normalized = version.replaceAll("(?i)^v", "").trim();
+        String[] parts = normalized.split("[^0-9]+");
+        int[] numbers = new int[parts.length];
+        int count = 0;
+        for (String part : parts) {
+            if (part.isEmpty()) {
+                continue;
+            }
+            numbers[count++] = Integer.parseInt(part);
+        }
+        return Arrays.copyOf(numbers, count);
     }
 }
