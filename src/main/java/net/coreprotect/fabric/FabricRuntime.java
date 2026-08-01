@@ -37,6 +37,7 @@ public final class FabricRuntime {
     private final Path rootDirectory;
     private final Path configPath;
     private final Path blacklistPath;
+    private final RuntimeGeneration generation = new RuntimeGeneration();
     private Path databaseRootDirectory;
     private CoreProtectFabricConfig config;
     private WorldConfigService worldConfigs;
@@ -88,6 +89,7 @@ public final class FabricRuntime {
             updateCheckService.refreshAsync(config.checkUpdates());
             autoPurgeService = new AutoPurgeService(this, logger);
             worldEditIntegration = registerOptionalWorldEditIntegration();
+            generation.advance();
             logger.info("CoreProtect initialized at {} (database root: {})", rootDirectory.toAbsolutePath(), databaseRootDirectory.toAbsolutePath());
         }
         catch (IOException | RuntimeException exception) {
@@ -101,6 +103,8 @@ public final class FabricRuntime {
             return;
         }
 
+        generation.advance();
+
         if (eventLogger != null) {
             eventLogger.flushInteractionAggregates();
         }
@@ -109,6 +113,10 @@ public final class FabricRuntime {
         if (autoPurgeService != null) {
             autoPurgeService.shutdown();
             autoPurgeService = null;
+        }
+        if (updateCheckService != null) {
+            updateCheckService.close();
+            updateCheckService = null;
         }
         TransientLookupCache.clear();
         database.close();
@@ -122,7 +130,6 @@ public final class FabricRuntime {
         containerSessionService = null;
         inspectorService = null;
         rollbackService = null;
-        updateCheckService = null;
         worldConfigs = null;
         blacklist = null;
     }
@@ -135,6 +142,14 @@ public final class FabricRuntime {
 
         CoreProtectDatabase previousDatabase = database;
         AutoCloseable previousWorldEditIntegration = worldEditIntegration;
+        UpdateCheckService previousUpdateCheckService = updateCheckService;
+
+        if (rollbackService != null && rollbackService.hasPendingWork()) {
+            throw new IllegalStateException("Cannot reload CoreProtect while rollback work is pending");
+        }
+        if (previousDatabase.writesPaused()) {
+            throw new IllegalStateException("Cannot reload CoreProtect while database maintenance is active");
+        }
 
         try {
             if (eventLogger != null) {
@@ -170,6 +185,10 @@ public final class FabricRuntime {
             worldEditIntegration = registerOptionalWorldEditIntegration();
 
             previousDatabase.close();
+            if (previousUpdateCheckService != null) {
+                previousUpdateCheckService.close();
+            }
+            generation.advance();
             logger.info("CoreProtect reloaded from {} (database root: {})", rootDirectory.toAbsolutePath(), databaseRootDirectory.toAbsolutePath());
         }
         catch (IOException | RuntimeException exception) {
@@ -192,6 +211,14 @@ public final class FabricRuntime {
 
     public CoreProtectFabricConfig config() {
         return config;
+    }
+
+    public long captureGeneration() {
+        return generation.capture();
+    }
+
+    public boolean isCurrentGeneration(long capturedGeneration) {
+        return generation.isCurrent(capturedGeneration);
     }
 
     public CoreProtectFabricConfig config(ServerWorld world) {
@@ -260,6 +287,9 @@ public final class FabricRuntime {
         if (database == null || eventLogger == null) {
             throw new IllegalStateException("CoreProtect is not initialized.");
         }
+        if (rollbackService != null && rollbackService.hasPendingWork()) {
+            throw new IllegalStateException("Cannot migrate the CoreProtect database while rollback work is pending");
+        }
 
         LookupService newLookupService = new LookupService(newDatabase);
         RollbackService newRollbackService = new RollbackService(newDatabase, worldConfigs, logger);
@@ -272,6 +302,7 @@ public final class FabricRuntime {
         rollbackService = newRollbackService;
         inspectorService = newInspectorService;
         previousDatabase.close();
+        generation.advance();
         logger.info("CoreProtect switched database backend to {}", newDatabase.databaseDescription());
         return bufferedWrites;
     }

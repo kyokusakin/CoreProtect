@@ -39,7 +39,7 @@ final class StructuredParameterSupport {
     private static final List<String> LOOKUP_USER_TAGS = List.of("#container", "#hopper", "#tnt", "#creeper", "#enderman");
     private static final List<String> TARGET_TAGS = List.of("#button", "#container", "#door", "#natural", "#pressure_plate", "#shulker_box");
     private static final List<String> LOOKUP_FLAGS = List.of("#count");
-    private static final List<String> ROLLBACK_FLAGS = List.of("#preview", "#preview_cancel", "#count", "#silent", "#verbose");
+    private static final List<String> ROLLBACK_FLAGS = List.of("#preview", "#preview_cancel", "#silent", "#verbose");
     private static final List<String> PURGE_FLAGS = List.of("#optimize");
     private static final List<String> TIME_EXAMPLES = List.of("30m", "1h", "1d", "7d", "30d", "1h-2h");
     private static final List<String> LIMIT_EXAMPLES = List.of("10", "20", "50", "100");
@@ -52,6 +52,14 @@ final class StructuredParameterSupport {
         LOOKUP,
         ROLLBACK,
         PURGE
+    }
+
+    static List<String> flagsFor(CommandKind kind) {
+        return switch (kind) {
+            case LOOKUP -> LOOKUP_FLAGS;
+            case ROLLBACK -> ROLLBACK_FLAGS;
+            case PURGE -> PURGE_FLAGS;
+        };
     }
 
     static String paramName(int index) {
@@ -147,13 +155,7 @@ final class StructuredParameterSupport {
     }
 
     private static void suggestFlags(CommandKind kind, SuggestionsBuilder builder, String remaining, Set<String> existing) {
-        List<String> flags = switch (kind) {
-            case LOOKUP -> LOOKUP_FLAGS;
-            case ROLLBACK -> ROLLBACK_FLAGS;
-            case PURGE -> PURGE_FLAGS;
-        };
-
-        for (String flag : flags) {
+        for (String flag : flagsFor(kind)) {
             if (existing.contains(flag.toLowerCase(Locale.ROOT))) {
                 continue;
             }

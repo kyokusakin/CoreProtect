@@ -171,6 +171,20 @@ public final class LegacyCommandParser {
         );
     }
 
+    static String findLookupOnlyFlag(String input) {
+        if (input == null || input.isBlank()) {
+            return null;
+        }
+
+        for (String rawToken : input.trim().split("\\s+")) {
+            String token = normalize(rawToken).toLowerCase(Locale.ROOT);
+            if (isCountFlag(token) || "#summary".equals(token)) {
+                return rawToken.trim();
+            }
+        }
+        return null;
+    }
+
     private static LegacyCommandOptions emptyOptions() {
         return new LegacyCommandOptions(null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, false, false, false, false, false);
     }

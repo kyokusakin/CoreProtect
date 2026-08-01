@@ -82,8 +82,22 @@ public final class CoreProtectDatabase implements AutoCloseable {
             writeConnection = openConnection();
             initializeSchema(writeConnection);
         }
-        catch (ClassNotFoundException | SQLException exception) {
+        catch (ClassNotFoundException | SQLException | RuntimeException exception) {
+            writer.shutdownNow();
+            closeWriteConnection();
             throw new IllegalStateException("Unable to start CoreProtect database", exception);
+        }
+    }
+
+    boolean hasOpenWriteConnection() {
+        if (writeConnection == null) {
+            return false;
+        }
+        try {
+            return !writeConnection.isClosed();
+        }
+        catch (SQLException exception) {
+            return false;
         }
     }
 
@@ -1833,6 +1847,7 @@ public final class CoreProtectDatabase implements AutoCloseable {
         ensureColumn(connection, "cp_pending_inventory_rollbacks", "actor_id", databaseType == CoreProtectFabricConfig.DatabaseType.SQLITE ? "INTEGER" : "BIGINT");
         ensureColumn(connection, "cp_pending_inventory_rollbacks", "world_id", databaseType == CoreProtectFabricConfig.DatabaseType.SQLITE ? "INTEGER" : "BIGINT");
         ensureColumn(connection, "cp_pending_inventory_rollbacks", "target_id", databaseType == CoreProtectFabricConfig.DatabaseType.SQLITE ? "INTEGER" : "BIGINT");
+        ensureReferenceIndexes(connection);
         normalizeMappingTables(connection);
         repairReferenceIntegrity(connection);
         ensureForeignKeys(connection);
@@ -1840,13 +1855,22 @@ public final class CoreProtectDatabase implements AutoCloseable {
         cleanupObsoleteIndexes(connection);
     }
 
+    void ensureReferenceIndexes(Connection connection) throws SQLException {
+        ensureIndex(connection, "cp_events", "cp_events_actor_id_idx", "CREATE INDEX cp_events_actor_id_idx ON cp_events (actor_id)");
+        ensureIndex(connection, "cp_events", "cp_events_world_id_idx", "CREATE INDEX cp_events_world_id_idx ON cp_events (world_id)");
+        ensureIndex(connection, "cp_events", "cp_events_target_id_idx", "CREATE INDEX cp_events_target_id_idx ON cp_events (target_id)");
+        ensureIndex(connection, "cp_events", "cp_events_entity_key_idx", "CREATE INDEX cp_events_entity_key_idx ON cp_events (entity_key)");
+        ensureIndex(connection, "cp_pending_inventory_rollbacks", "cp_pending_inventory_rollbacks_actor_id_status_idx",
+            "CREATE INDEX cp_pending_inventory_rollbacks_actor_id_status_idx ON cp_pending_inventory_rollbacks (actor_id, status)");
+        ensureIndex(connection, "cp_pending_inventory_rollbacks", "cp_pending_inventory_rollbacks_world_id_status_idx",
+            "CREATE INDEX cp_pending_inventory_rollbacks_world_id_status_idx ON cp_pending_inventory_rollbacks (world_id, status)");
+        ensureIndex(connection, "cp_pending_inventory_rollbacks", "cp_pending_inventory_rollbacks_target_id_status_idx",
+            "CREATE INDEX cp_pending_inventory_rollbacks_target_id_status_idx ON cp_pending_inventory_rollbacks (target_id, status)");
+    }
+
     private void ensureSchemaIndexes(Connection connection) throws SQLException {
         if (databaseType == CoreProtectFabricConfig.DatabaseType.SQLITE) {
             ensureIndex(connection, "cp_events", "cp_events_ts_idx", "CREATE INDEX cp_events_ts_idx ON cp_events (ts)");
-            ensureIndex(connection, "cp_events", "cp_events_actor_id_idx", "CREATE INDEX cp_events_actor_id_idx ON cp_events (actor_id)");
-            ensureIndex(connection, "cp_events", "cp_events_world_id_idx", "CREATE INDEX cp_events_world_id_idx ON cp_events (world_id)");
-            ensureIndex(connection, "cp_events", "cp_events_target_id_idx", "CREATE INDEX cp_events_target_id_idx ON cp_events (target_id)");
-            ensureIndex(connection, "cp_events", "cp_events_entity_key_idx", "CREATE INDEX cp_events_entity_key_idx ON cp_events (entity_key)");
             ensureIndex(connection, "cp_events", "cp_events_world_id_ts_idx", "CREATE INDEX cp_events_world_id_ts_idx ON cp_events (world_id, ts)");
             ensureIndex(connection, "cp_events", "cp_events_world_id_xyz_idx", "CREATE INDEX cp_events_world_id_xyz_idx ON cp_events (world_id, x, y, z)");
             ensureIndex(connection, "cp_events", "cp_events_actor_id_ts_idx", "CREATE INDEX cp_events_actor_id_ts_idx ON cp_events (actor_id, ts)");
@@ -1870,12 +1894,6 @@ public final class CoreProtectDatabase implements AutoCloseable {
 
             ensureIndex(connection, "cp_pending_inventory_rollbacks", "cp_pending_inventory_rollbacks_event_restore_idx",
                 "CREATE UNIQUE INDEX cp_pending_inventory_rollbacks_event_restore_idx ON cp_pending_inventory_rollbacks (event_id, restore)");
-            ensureIndex(connection, "cp_pending_inventory_rollbacks", "cp_pending_inventory_rollbacks_actor_id_status_idx",
-                "CREATE INDEX cp_pending_inventory_rollbacks_actor_id_status_idx ON cp_pending_inventory_rollbacks (actor_id, status)");
-            ensureIndex(connection, "cp_pending_inventory_rollbacks", "cp_pending_inventory_rollbacks_world_id_status_idx",
-                "CREATE INDEX cp_pending_inventory_rollbacks_world_id_status_idx ON cp_pending_inventory_rollbacks (world_id, status)");
-            ensureIndex(connection, "cp_pending_inventory_rollbacks", "cp_pending_inventory_rollbacks_target_id_status_idx",
-                "CREATE INDEX cp_pending_inventory_rollbacks_target_id_status_idx ON cp_pending_inventory_rollbacks (target_id, status)");
             ensureIndex(connection, "cp_pending_inventory_rollbacks", "cp_pending_inventory_rollbacks_status_idx",
                 "CREATE INDEX cp_pending_inventory_rollbacks_status_idx ON cp_pending_inventory_rollbacks (status, created_ts)");
             ensureIndex(connection, "cp_pending_inventory_rollbacks", "cp_pending_inventory_rollbacks_status_attempts_updated_idx",
@@ -1884,10 +1902,6 @@ public final class CoreProtectDatabase implements AutoCloseable {
         }
 
         ensureIndex(connection, "cp_events", "cp_events_ts_idx", "CREATE INDEX cp_events_ts_idx ON cp_events (ts)");
-        ensureIndex(connection, "cp_events", "cp_events_actor_id_idx", "CREATE INDEX cp_events_actor_id_idx ON cp_events (actor_id)");
-        ensureIndex(connection, "cp_events", "cp_events_world_id_idx", "CREATE INDEX cp_events_world_id_idx ON cp_events (world_id)");
-        ensureIndex(connection, "cp_events", "cp_events_target_id_idx", "CREATE INDEX cp_events_target_id_idx ON cp_events (target_id)");
-        ensureIndex(connection, "cp_events", "cp_events_entity_key_idx", "CREATE INDEX cp_events_entity_key_idx ON cp_events (entity_key)");
         ensureIndex(connection, "cp_events", "cp_events_world_id_ts_idx", "CREATE INDEX cp_events_world_id_ts_idx ON cp_events (world_id, ts)");
         ensureIndex(connection, "cp_events", "cp_events_world_id_xyz_idx", "CREATE INDEX cp_events_world_id_xyz_idx ON cp_events (world_id, x, y, z)");
         ensureIndex(connection, "cp_events", "cp_events_actor_id_ts_idx", "CREATE INDEX cp_events_actor_id_ts_idx ON cp_events (actor_id, ts)");
@@ -1911,12 +1925,6 @@ public final class CoreProtectDatabase implements AutoCloseable {
 
         ensureIndex(connection, "cp_pending_inventory_rollbacks", "cp_pending_inventory_rollbacks_event_restore_idx",
             "CREATE UNIQUE INDEX cp_pending_inventory_rollbacks_event_restore_idx ON cp_pending_inventory_rollbacks (event_id, restore)");
-        ensureIndex(connection, "cp_pending_inventory_rollbacks", "cp_pending_inventory_rollbacks_actor_id_status_idx",
-            "CREATE INDEX cp_pending_inventory_rollbacks_actor_id_status_idx ON cp_pending_inventory_rollbacks (actor_id, status)");
-        ensureIndex(connection, "cp_pending_inventory_rollbacks", "cp_pending_inventory_rollbacks_world_id_status_idx",
-            "CREATE INDEX cp_pending_inventory_rollbacks_world_id_status_idx ON cp_pending_inventory_rollbacks (world_id, status)");
-        ensureIndex(connection, "cp_pending_inventory_rollbacks", "cp_pending_inventory_rollbacks_target_id_status_idx",
-            "CREATE INDEX cp_pending_inventory_rollbacks_target_id_status_idx ON cp_pending_inventory_rollbacks (target_id, status)");
         ensureIndex(connection, "cp_pending_inventory_rollbacks", "cp_pending_inventory_rollbacks_status_idx",
             "CREATE INDEX cp_pending_inventory_rollbacks_status_idx ON cp_pending_inventory_rollbacks (status, created_ts)");
         ensureIndex(connection, "cp_pending_inventory_rollbacks", "cp_pending_inventory_rollbacks_status_attempts_updated_idx",
@@ -1975,15 +1983,40 @@ public final class CoreProtectDatabase implements AutoCloseable {
         deduplicateTargetMappings(connection);
     }
 
-    private void repairReferenceIntegrity(Connection connection) throws SQLException {
-        purgeOrphanPendingInventoryRows(connection);
-        nullOrphanReference(connection, "cp_events", "actor_id", "cp_actor");
-        nullOrphanReference(connection, "cp_events", "world_id", "cp_world");
-        nullOrphanReference(connection, "cp_events", "target_id", "cp_target");
-        nullOrphanReference(connection, "cp_events", "entity_key", "cp_entity");
-        nullOrphanReference(connection, "cp_pending_inventory_rollbacks", "actor_id", "cp_actor");
-        nullOrphanReference(connection, "cp_pending_inventory_rollbacks", "world_id", "cp_world");
-        nullOrphanReference(connection, "cp_pending_inventory_rollbacks", "target_id", "cp_target");
+    void repairReferenceIntegrity(Connection connection) throws SQLException {
+        if (!hasForeignKeyReference(connection, "cp_pending_inventory_rollbacks", "event_id", "cp_events")) {
+            purgeOrphanPendingInventoryRows(connection);
+        }
+        repairOrphanReference(connection, "cp_events", "actor_id", "cp_actor");
+        repairOrphanReference(connection, "cp_events", "world_id", "cp_world");
+        repairOrphanReference(connection, "cp_events", "target_id", "cp_target");
+        repairOrphanReference(connection, "cp_events", "entity_key", "cp_entity");
+        repairOrphanReference(connection, "cp_pending_inventory_rollbacks", "actor_id", "cp_actor");
+        repairOrphanReference(connection, "cp_pending_inventory_rollbacks", "world_id", "cp_world");
+        repairOrphanReference(connection, "cp_pending_inventory_rollbacks", "target_id", "cp_target");
+    }
+
+    private void repairOrphanReference(Connection connection, String tableName, String columnName, String referenceTable) throws SQLException {
+        if (!hasForeignKeyReference(connection, tableName, columnName, referenceTable)) {
+            nullOrphanReference(connection, tableName, columnName, referenceTable);
+        }
+    }
+
+    private boolean hasForeignKeyReference(Connection connection, String tableName, String columnName, String referenceTable) throws SQLException {
+        if (databaseType == CoreProtectFabricConfig.DatabaseType.SQLITE) {
+            return hasSqliteForeignKey(connection, tableName, columnName, referenceTable);
+        }
+
+        DatabaseMetaData metadata = connection.getMetaData();
+        try (ResultSet resultSet = metadata.getImportedKeys(connection.getCatalog(), null, tableName)) {
+            while (resultSet.next()) {
+                if (columnName.equalsIgnoreCase(resultSet.getString("FKCOLUMN_NAME"))
+                    && referenceTable.equalsIgnoreCase(resultSet.getString("PKTABLE_NAME"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void ensureForeignKeys(Connection connection) throws SQLException {
@@ -3466,13 +3499,24 @@ public final class CoreProtectDatabase implements AutoCloseable {
     private Connection openConnection() throws SQLException {
         if (databaseType == CoreProtectFabricConfig.DatabaseType.SQLITE) {
             Connection connection = DriverManager.getConnection("jdbc:sqlite:" + databasePath.toAbsolutePath());
-            try (Statement statement = connection.createStatement()) {
-                statement.execute("PRAGMA foreign_keys = ON");
-                statement.execute("PRAGMA busy_timeout = 5000");
-                statement.execute("PRAGMA journal_mode = WAL");
-                statement.execute("PRAGMA synchronous = NORMAL");
+            try {
+                try (Statement statement = connection.createStatement()) {
+                    statement.execute("PRAGMA foreign_keys = ON");
+                    statement.execute("PRAGMA busy_timeout = 5000");
+                    statement.execute("PRAGMA journal_mode = WAL");
+                    statement.execute("PRAGMA synchronous = NORMAL");
+                }
+                return connection;
             }
-            return connection;
+            catch (SQLException | RuntimeException exception) {
+                try {
+                    connection.close();
+                }
+                catch (SQLException closeException) {
+                    exception.addSuppressed(closeException);
+                }
+                throw exception;
+            }
         }
 
         String url = "jdbc:mysql://" + config.mysqlHost() + ":" + config.mysqlPort() + "/" + config.mysqlDatabase()
@@ -3588,13 +3632,21 @@ public final class CoreProtectDatabase implements AutoCloseable {
             logger.warn("Closing CoreProtect database with {} pending write(s) still not flushed", outstanding);
         }
 
-        if (writeConnection != null) {
-            try {
-                writeConnection.close();
-            }
-            catch (SQLException exception) {
-                logger.warn("Failed to close CoreProtect database cleanly", exception);
-            }
+        closeWriteConnection();
+    }
+
+    private void closeWriteConnection() {
+        if (writeConnection == null) {
+            return;
+        }
+        try {
+            writeConnection.close();
+        }
+        catch (SQLException exception) {
+            logger.warn("Failed to close CoreProtect database cleanly", exception);
+        }
+        finally {
+            writeConnection = null;
         }
     }
 }

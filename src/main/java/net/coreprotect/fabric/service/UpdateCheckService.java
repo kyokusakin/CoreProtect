@@ -15,7 +15,7 @@ import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public final class UpdateCheckService {
+public final class UpdateCheckService implements AutoCloseable {
     private static final Pattern TAG_NAME_PATTERN = Pattern.compile("\"tag_name\"\\s*:\\s*\"([^\"]+)\"");
     private static final String RELEASES_URL = "https://api.github.com/repos/kyokusakin/CoreProtect/releases/latest";
 
@@ -133,5 +133,14 @@ public final class UpdateCheckService {
             numbers[count++] = Integer.parseInt(part);
         }
         return Arrays.copyOf(numbers, count);
+    }
+
+    boolean isShutdown() {
+        return executor.isShutdown();
+    }
+
+    @Override
+    public void close() {
+        executor.shutdownNow();
     }
 }

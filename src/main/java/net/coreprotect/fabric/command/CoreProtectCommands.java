@@ -554,6 +554,19 @@ public final class CoreProtectCommands {
         sendLocalizedMessage(source, "fabric.rollback.failed", "CoreProtect - Rollback task failed. Check the server log for details.");
     }
 
+    private static boolean rejectStaleRollbackResult(ServerCommandSource source, FabricRuntime runtime, long generation) {
+        if (runtime.isCurrentGeneration(generation)) {
+            return false;
+        }
+        sendLocalizedMessage(
+            source,
+            "fabric.rollback.cancelled_reload",
+            "CoreProtect - Rollback cancelled because CoreProtect was reloaded."
+        );
+        endRollbackSession(source);
+        return true;
+    }
+
     private static void sendLine(ServerCommandSource source, String line) {
         source.sendFeedback(() -> CoreProtectText.line(line), false);
     }
@@ -1138,6 +1151,12 @@ public final class CoreProtectCommands {
     }
 
     private static int runRollback(ServerCommandSource source, FabricRuntime runtime, boolean restore, String input) {
+        String lookupOnlyFlag = LegacyCommandParser.findLookupOnlyFlag(input);
+        if (lookupOnlyFlag != null) {
+            sendCoreProtectPhrase(source, Phrase.INVALID_PARAMETER, lookupOnlyFlag);
+            return 0;
+        }
+
         LegacyCommandOptions options = LegacyCommandParser.parse(input);
         if (!CoreProtectPermissions.canRunRollback(source, restore, true)) {
             return 0;
@@ -1304,13 +1323,15 @@ public final class CoreProtectCommands {
         List<String> rollbackIncludeTargets = options.includeTargets();
         List<String> rollbackExcludeTargets = options.excludeTargets();
         List<CoreProtectEventType> rollbackActionFilter = actionFilter;
+        RollbackService rollbackOwner = runtime.rollback();
+        long rollbackGeneration = runtime.captureGeneration();
 
         if (options.preview()) {
             sendCoreProtectPhrase(source, Phrase.ROLLBACK_STARTED, subject, Selector.THIRD);
             long startedAt = System.nanoTime();
             submitAsync(
                 source.getServer(),
-                () -> runtime.rollback().collectCandidatesBetween(
+                () -> rollbackOwner.collectCandidatesBetween(
                     timeWindow.notBefore(),
                     timeWindow.notAfter(),
                     rollbackScopeBounds == null ? rollbackWorldKey : null,
@@ -1322,49 +1343,54 @@ public final class CoreProtectCommands {
                     rollbackIncludeTargets,
                     rollbackExcludeTargets
                 ),
-                candidates -> runtime.rollback().enqueuePreparedPreview(
-                    playerUuid,
-                    candidates,
-                    restore,
-                    preview -> {
-                        ServerPlayerEntity livePlayer = playerUuid == null ? null : source.getServer().getPlayerManager().getPlayer(playerUuid);
-                        if (livePlayer != null) {
-                            runtime.previews().show(livePlayer, preview.blockChanges());
-                        }
-                        rememberUndo(
-                            source,
-                            runtime,
-                            new UndoSessionService.UndoOperation(
+                candidates -> {
+                    if (rejectStaleRollbackResult(source, runtime, rollbackGeneration)) {
+                        return;
+                    }
+                    rollbackOwner.enqueuePreparedPreview(
+                        playerUuid,
+                        candidates,
+                        restore,
+                        preview -> {
+                            ServerPlayerEntity livePlayer = playerUuid == null ? null : source.getServer().getPlayerManager().getPlayer(playerUuid);
+                            if (livePlayer != null) {
+                                runtime.previews().show(livePlayer, preview.blockChanges());
+                            }
+                            rememberUndo(
+                                source,
+                                runtime,
+                                new UndoSessionService.UndoOperation(
+                                    restore,
+                                    true,
+                                    rollbackScopeBounds == null ? rollbackWorldKey : null,
+                                    rollbackScopeBounds,
+                                    timeWindow.notBefore(),
+                                    timeWindow.notAfter(),
+                                    actorNames,
+                                    rollbackExcludeActors,
+                                    rollbackActionFilter,
+                                    rollbackIncludeTargets,
+                                    rollbackExcludeTargets,
+                                    describeUndoOperation(scopeSummary, timeSummary, actorSummary, targetSummary, describeActionFilters(rollbackActionFilter))
+                                )
+                            );
+                            sendRollbackOutcome(
+                                source,
                                 restore,
                                 true,
+                                subject,
+                                timeSummary,
+                                rollbackRadius,
+                                worldEditSelection ? "#worldedit" : null,
                                 rollbackScopeBounds == null ? rollbackWorldKey : null,
-                                rollbackScopeBounds,
-                                timeWindow.notBefore(),
-                                timeWindow.notAfter(),
-                                actorNames,
-                                rollbackExcludeActors,
-                                rollbackActionFilter,
-                                rollbackIncludeTargets,
-                                rollbackExcludeTargets,
-                                describeUndoOperation(scopeSummary, timeSummary, actorSummary, targetSummary, describeActionFilters(rollbackActionFilter))
-                            )
-                        );
-                        sendRollbackOutcome(
-                            source,
-                            restore,
-                            true,
-                            subject,
-                            timeSummary,
-                            rollbackRadius,
-                            worldEditSelection ? "#worldedit" : null,
-                            rollbackScopeBounds == null ? rollbackWorldKey : null,
-                            preview.matched(),
-                            System.nanoTime() - startedAt,
-                            true
-                        );
-                        endRollbackSession(source);
-                    }
-                ),
+                                preview.matched(),
+                                System.nanoTime() - startedAt,
+                                true
+                            );
+                            endRollbackSession(source);
+                        }
+                    );
+                },
                 throwable -> {
                     handleRollbackFailure(source, throwable);
                     endRollbackSession(source);
@@ -1380,7 +1406,7 @@ public final class CoreProtectCommands {
         long startedAt = System.nanoTime();
         submitAsync(
             source.getServer(),
-            () -> runtime.rollback().collectCandidatesBetween(
+            () -> rollbackOwner.collectCandidatesBetween(
                 timeWindow.notBefore(),
                 timeWindow.notAfter(),
                 rollbackScopeBounds == null ? rollbackWorldKey : null,
@@ -1392,47 +1418,52 @@ public final class CoreProtectCommands {
                 rollbackIncludeTargets,
                 rollbackExcludeTargets
             ),
-            candidates -> runtime.rollback().enqueuePreparedApply(
-                candidates,
-                restore,
-                rollbackRadius == null ? -1 : rollbackRadius,
-                seconds,
-                summarizeActors(actorNames),
-                result -> {
-                    rememberUndo(
-                        source,
-                        runtime,
-                        new UndoSessionService.UndoOperation(
+            candidates -> {
+                if (rejectStaleRollbackResult(source, runtime, rollbackGeneration)) {
+                    return;
+                }
+                rollbackOwner.enqueuePreparedApply(
+                    candidates,
+                    restore,
+                    rollbackRadius == null ? -1 : rollbackRadius,
+                    seconds,
+                    summarizeActors(actorNames),
+                    result -> {
+                        rememberUndo(
+                            source,
+                            runtime,
+                            new UndoSessionService.UndoOperation(
+                                restore,
+                                false,
+                                rollbackScopeBounds == null ? rollbackWorldKey : null,
+                                rollbackScopeBounds,
+                                timeWindow.notBefore(),
+                                timeWindow.notAfter(),
+                                actorNames,
+                                rollbackExcludeActors,
+                                rollbackActionFilter,
+                                rollbackIncludeTargets,
+                                rollbackExcludeTargets,
+                                describeUndoOperation(scopeSummary, timeSummary, actorSummary, targetSummary, describeActionFilters(rollbackActionFilter))
+                            )
+                        );
+                        sendRollbackOutcome(
+                            source,
                             restore,
                             false,
+                            subject,
+                            timeSummary,
+                            rollbackRadius,
+                            worldEditSelection ? "#worldedit" : null,
                             rollbackScopeBounds == null ? rollbackWorldKey : null,
-                            rollbackScopeBounds,
-                            timeWindow.notBefore(),
-                            timeWindow.notAfter(),
-                            actorNames,
-                            rollbackExcludeActors,
-                            rollbackActionFilter,
-                            rollbackIncludeTargets,
-                            rollbackExcludeTargets,
-                            describeUndoOperation(scopeSummary, timeSummary, actorSummary, targetSummary, describeActionFilters(rollbackActionFilter))
-                        )
-                    );
-                    sendRollbackOutcome(
-                        source,
-                        restore,
-                        false,
-                        subject,
-                        timeSummary,
-                        rollbackRadius,
-                        worldEditSelection ? "#worldedit" : null,
-                        rollbackScopeBounds == null ? rollbackWorldKey : null,
-                        result.changed(),
-                        System.nanoTime() - startedAt,
-                        false
-                    );
-                    endRollbackSession(source);
-                }
-            ),
+                            result.changed(),
+                            System.nanoTime() - startedAt,
+                            false
+                        );
+                        endRollbackSession(source);
+                    }
+                );
+            },
             throwable -> {
                 handleRollbackFailure(source, throwable);
                 endRollbackSession(source);
@@ -1697,9 +1728,11 @@ public final class CoreProtectCommands {
         }
         boolean undoRestore = !operation.restore();
         long startedAt = System.nanoTime();
+        RollbackService rollbackOwner = runtime.rollback();
+        long rollbackGeneration = runtime.captureGeneration();
         submitAsync(
             source.getServer(),
-            () -> runtime.rollback().collectCandidatesBetween(
+            () -> rollbackOwner.collectCandidatesBetween(
                 operation.notBefore(),
                 operation.notAfter(),
                 operation.worldKey(),
@@ -1711,47 +1744,54 @@ public final class CoreProtectCommands {
                 operation.includeTargets(),
                 operation.excludeTargets()
             ),
-            candidates -> runtime.rollback().enqueuePreparedApply(
-                candidates,
-                undoRestore,
-                -1,
-                0,
-                summarizeActors(operation.actorNames()),
-                result -> {
-                    rememberUndo(
-                        source,
-                        runtime,
-                        new UndoSessionService.UndoOperation(
+            candidates -> {
+                if (!runtime.isCurrentGeneration(rollbackGeneration)) {
+                    runtime.undoSessions().remember(sessionKey, operation);
+                    rejectStaleRollbackResult(source, runtime, rollbackGeneration);
+                    return;
+                }
+                rollbackOwner.enqueuePreparedApply(
+                    candidates,
+                    undoRestore,
+                    -1,
+                    0,
+                    summarizeActors(operation.actorNames()),
+                    result -> {
+                        rememberUndo(
+                            source,
+                            runtime,
+                            new UndoSessionService.UndoOperation(
+                                undoRestore,
+                                false,
+                                operation.worldKey(),
+                                operation.bounds(),
+                                operation.notBefore(),
+                                operation.notAfter(),
+                                operation.actorNames(),
+                                operation.excludeActorNames(),
+                                operation.actionFilter(),
+                                operation.includeTargets(),
+                                operation.excludeTargets(),
+                                operation.description()
+                            )
+                        );
+                        sendRollbackOutcome(
+                            source,
                             undoRestore,
                             false,
-                            operation.worldKey(),
-                            operation.bounds(),
-                            operation.notBefore(),
-                            operation.notAfter(),
-                            operation.actorNames(),
-                            operation.excludeActorNames(),
-                            operation.actionFilter(),
-                            operation.includeTargets(),
-                            operation.excludeTargets(),
-                            operation.description()
-                        )
-                    );
-                    sendRollbackOutcome(
-                        source,
-                        undoRestore,
-                        false,
-                        describeRollbackSubject(resolveUndoWorldKey(operation), operation.actorNames()),
-                        extractUndoTimeSummary(operation.description()),
-                        extractUndoRadius(operation.description()),
-                        extractUndoSelection(operation.description()),
-                        resolveUndoWorldKey(operation),
-                        result.changed(),
-                        System.nanoTime() - startedAt,
-                        false
-                    );
-                    endRollbackSession(source);
-                }
-            ),
+                            describeRollbackSubject(resolveUndoWorldKey(operation), operation.actorNames()),
+                            extractUndoTimeSummary(operation.description()),
+                            extractUndoRadius(operation.description()),
+                            extractUndoSelection(operation.description()),
+                            resolveUndoWorldKey(operation),
+                            result.changed(),
+                            System.nanoTime() - startedAt,
+                            false
+                        );
+                        endRollbackSession(source);
+                    }
+                );
+            },
             throwable -> {
                 runtime.undoSessions().remember(sessionKey, operation);
                 handleRollbackFailure(source, throwable);
@@ -1783,9 +1823,11 @@ public final class CoreProtectCommands {
             runtime.previews().clear(player);
         }
         long startedAt = System.nanoTime();
+        RollbackService rollbackOwner = runtime.rollback();
+        long rollbackGeneration = runtime.captureGeneration();
         submitAsync(
             source.getServer(),
-            () -> runtime.rollback().collectCandidatesBetween(
+            () -> rollbackOwner.collectCandidatesBetween(
                 operation.notBefore(),
                 operation.notAfter(),
                 operation.worldKey(),
@@ -1797,48 +1839,55 @@ public final class CoreProtectCommands {
                 operation.includeTargets(),
                 operation.excludeTargets()
             ),
-            candidates -> runtime.rollback().enqueuePreparedApply(
-                candidates,
-                operation.restore(),
-                -1,
-                0,
-                summarizeActors(operation.actorNames()),
-                result -> {
-                    rememberUndo(
-                        source,
-                        runtime,
-                        new UndoSessionService.UndoOperation(
+            candidates -> {
+                if (!runtime.isCurrentGeneration(rollbackGeneration)) {
+                    runtime.undoSessions().remember(sessionKey, operation);
+                    rejectStaleRollbackResult(source, runtime, rollbackGeneration);
+                    return;
+                }
+                rollbackOwner.enqueuePreparedApply(
+                    candidates,
+                    operation.restore(),
+                    -1,
+                    0,
+                    summarizeActors(operation.actorNames()),
+                    result -> {
+                        rememberUndo(
+                            source,
+                            runtime,
+                            new UndoSessionService.UndoOperation(
+                                operation.restore(),
+                                false,
+                                operation.worldKey(),
+                                operation.bounds(),
+                                operation.notBefore(),
+                                operation.notAfter(),
+                                operation.actorNames(),
+                                operation.excludeActorNames(),
+                                operation.actionFilter(),
+                                operation.includeTargets(),
+                                operation.excludeTargets(),
+                                operation.description()
+                            )
+                        );
+
+                        sendRollbackOutcome(
+                            source,
                             operation.restore(),
                             false,
-                            operation.worldKey(),
-                            operation.bounds(),
-                            operation.notBefore(),
-                            operation.notAfter(),
-                            operation.actorNames(),
-                            operation.excludeActorNames(),
-                            operation.actionFilter(),
-                            operation.includeTargets(),
-                            operation.excludeTargets(),
-                            operation.description()
-                        )
-                    );
-
-                    sendRollbackOutcome(
-                        source,
-                        operation.restore(),
-                        false,
-                        describeRollbackSubject(resolveUndoWorldKey(operation), operation.actorNames()),
-                        extractUndoTimeSummary(operation.description()),
-                        extractUndoRadius(operation.description()),
-                        extractUndoSelection(operation.description()),
-                        resolveUndoWorldKey(operation),
-                        result.changed(),
-                        System.nanoTime() - startedAt,
-                        false
-                    );
-                    endRollbackSession(source);
-                }
-            ),
+                            describeRollbackSubject(resolveUndoWorldKey(operation), operation.actorNames()),
+                            extractUndoTimeSummary(operation.description()),
+                            extractUndoRadius(operation.description()),
+                            extractUndoSelection(operation.description()),
+                            resolveUndoWorldKey(operation),
+                            result.changed(),
+                            System.nanoTime() - startedAt,
+                            false
+                        );
+                        endRollbackSession(source);
+                    }
+                );
+            },
             throwable -> {
                 runtime.undoSessions().remember(sessionKey, operation);
                 handleRollbackFailure(source, throwable);

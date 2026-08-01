@@ -416,6 +416,10 @@ public final class RollbackService {
         }
     }
 
+    public boolean hasPendingWork() {
+        return activeServerTask != null || !pendingServerTasks.isEmpty();
+    }
+
     public int preview(
         ServerPlayerEntity player,
         int minimumSeconds,
@@ -568,12 +572,13 @@ public final class RollbackService {
                 continue;
             }
 
-            List<StoredEventRecord> bucketEvents = entry.getValue();
+            List<PlannedApplyEvent> bucketEvents = planBucketEvents(targetWorld, entry.getValue(), restore);
             for (int sliceStart = 0; sliceStart < bucketEvents.size(); sliceStart += CHUNK_APPLY_SLICE_SIZE) {
                 int sliceEnd = Math.min(sliceStart + CHUNK_APPLY_SLICE_SIZE, bucketEvents.size());
                 for (int index = sliceStart; index < sliceEnd; index++) {
-                    StoredEventRecord event = bucketEvents.get(index);
-                    ApplyOutcome outcome = applyEvent(targetWorld, event, restore);
+                    PlannedApplyEvent plannedEvent = bucketEvents.get(index);
+                    StoredEventRecord event = plannedEvent.event();
+                    ApplyOutcome outcome = applyEvent(targetWorld, event, restore, plannedEvent.applyBlockPhysics());
                     if (outcome == ApplyOutcome.APPLIED) {
                         changed++;
                         changedIds.add(event.id());
@@ -607,6 +612,57 @@ public final class RollbackService {
         return buckets;
     }
 
+    private List<PlannedApplyEvent> planBucketEvents(ServerWorld world, List<StoredEventRecord> events, boolean restore) {
+        // Keep each coordinate's history contiguous while ordering final states by physics dependency.
+        RollbackBlockApplyPlan<BlockPos, StoredEventRecord> blockPlan = new RollbackBlockApplyPlan<>();
+        List<StoredEventRecord> otherEvents = new ArrayList<>();
+        for (StoredEventRecord event : events) {
+            if (isBlockChangeEvent(event.type())) {
+                blockPlan.add(event.blockPos(), event);
+            }
+            else {
+                otherEvents.add(event);
+            }
+        }
+
+        List<PlannedApplyEvent> planned = new ArrayList<>(events.size());
+        for (RollbackBlockApplyPlan.Group<StoredEventRecord> group : blockPlan.orderedGroups(
+            (pos, positionEvents) -> classifyBlockGroup(world, pos, positionEvents, restore)
+        )) {
+            boolean applyPhysics = group.phase() == RollbackBlockApplyPlan.Phase.PHYSICS;
+            for (StoredEventRecord event : group.events()) {
+                planned.add(new PlannedApplyEvent(event, applyPhysics));
+            }
+        }
+        for (StoredEventRecord event : otherEvents) {
+            planned.add(new PlannedApplyEvent(event, true));
+        }
+        return planned;
+    }
+
+    private RollbackBlockApplyPlan.Phase classifyBlockGroup(
+        ServerWorld world,
+        BlockPos pos,
+        List<StoredEventRecord> events,
+        boolean restore
+    ) {
+        BlockState simulatedState = world.getBlockState(pos);
+        for (StoredEventRecord event : events) {
+            BlockState targetState = resolveBlockTargetState(world, event, restore, simulatedState);
+            if (targetState != null) {
+                simulatedState = targetState;
+            }
+        }
+        return RollbackBlockUpdatePolicy.phase(
+            simulatedState.isAir(),
+            RollbackBlockUpdatePolicy.requiresPhysics(simulatedState, world, pos)
+        );
+    }
+
+    private boolean isBlockChangeEvent(CoreProtectEventType eventType) {
+        return eventType == CoreProtectEventType.BLOCK_PLACE || eventType == CoreProtectEventType.BLOCK_BREAK;
+    }
+
     private List<PreviewService.PreviewBlockChange> buildPreviewChanges(ServerPlayerEntity player, List<StoredEventRecord> candidates, boolean restore) {
         Map<String, PreviewService.PreviewBlockChange> changes = new LinkedHashMap<>();
         for (StoredEventRecord event : candidates) {
@@ -636,6 +692,10 @@ public final class RollbackService {
 
     private BlockState previewBlockState(ServerWorld world, StoredEventRecord event, boolean restore) {
         BlockState currentState = event.hasPosition() ? world.getBlockState(event.blockPos()) : null;
+        return resolveBlockTargetState(world, event, restore, currentState);
+    }
+
+    private BlockState resolveBlockTargetState(ServerWorld world, StoredEventRecord event, boolean restore, BlockState currentState) {
         BlockState targetState = switch (event.type()) {
             case BLOCK_PLACE -> restore
                 ? BlockStateSerializer.deserialize(world, event.target(), event.payload(), logger)
@@ -651,13 +711,13 @@ public final class RollbackService {
         return normalizeRollbackTargetState(event, restore, currentState, targetState);
     }
 
-    private ApplyOutcome applyEvent(ServerWorld world, StoredEventRecord event, boolean restore) {
+    private ApplyOutcome applyEvent(ServerWorld world, StoredEventRecord event, boolean restore, boolean applyBlockPhysics) {
         switch (event.type()) {
             case SIGN_CHANGE:
                 return toApplyOutcome(applySignChange(world, event, restore));
             case BLOCK_PLACE:
             case BLOCK_BREAK:
-                return toApplyOutcome(applyBlockChange(world, event, restore));
+                return toApplyOutcome(applyBlockChange(world, event, restore, applyBlockPhysics));
             case CONTAINER_TRANSACTION:
                 return toApplyOutcome(applyContainerTransaction(world, event, restore));
             case ITEM_PICKUP:
@@ -768,41 +828,25 @@ public final class RollbackService {
         return ApplyOutcome.DEFERRED;
     }
 
-    private boolean applyBlockChange(ServerWorld world, StoredEventRecord event, boolean restore) {
+    private boolean applyBlockChange(ServerWorld world, StoredEventRecord event, boolean restore, boolean applyPhysics) {
         BlockPos pos = event.blockPos();
         BlockState currentState = world.getBlockState(pos);
-        BlockState targetState;
-        switch (event.type()) {
-            case BLOCK_PLACE:
-                targetState = restore
-                    ? BlockStateSerializer.deserialize(world, event.target(), event.payload(), logger)
-                    : BlockStateSerializer.air();
-                break;
-            case BLOCK_BREAK:
-                targetState = restore
-                    ? BlockStateSerializer.air()
-                    : BlockStateSerializer.deserialize(world, event.target(), event.payload(), logger);
-                break;
-            default:
-                return false;
-        }
+        BlockState targetState = resolveBlockTargetState(world, event, restore, currentState);
         if (targetState == null) {
             logger.warn("Skipping {} at {} due to unreadable block state payload", event.type(), pos);
             return false;
         }
 
-        targetState = normalizeRollbackTargetState(event, restore, currentState, targetState);
-
         if (currentState.equals(targetState)) {
             return false;
         }
 
-        boolean changed = setBlockStateSafely(world, pos, targetState);
+        boolean changed = setBlockStateSafely(world, pos, targetState, applyPhysics);
         if (!changed) {
             return false;
         }
 
-        applyCompanionBlockCorrections(world, pos, currentState, targetState);
+        applyCompanionBlockCorrections(world, pos, currentState, targetState, applyPhysics);
         reconcileAttachedDecorations(world, pos);
         return true;
     }
@@ -810,17 +854,23 @@ public final class RollbackService {
     /**
      * Applies a block state during rollback while tolerating physics/neighbour update failures.
      * <p>
-     * A full {@link Block#NOTIFY_ALL} update can trigger neighbour reactions that throw at runtime
+     * Air changes never propagate neighbour physics. For other targets, a full
+     * {@link Block#NOTIFY_ALL} update can trigger neighbour reactions that throw at runtime
      * (e.g. a malformed multi-block or a broken redstone graph). Upstream CoreProtect guards the
      * equivalent {@code setBlockData(..., true)} call and retries without physics so a single bad
      * block doesn't abort the whole rollback. We mirror that: retry once with listener-only flags so
      * the state still lands without propagating neighbour updates.
      */
-    private boolean setBlockStateSafely(ServerWorld world, BlockPos pos, BlockState targetState) {
+    private boolean setBlockStateSafely(ServerWorld world, BlockPos pos, BlockState targetState, boolean applyPhysics) {
+        int updateFlags = RollbackBlockUpdatePolicy.updateFlags(targetState.isAir(), applyPhysics);
         try {
-            return world.setBlockState(pos, targetState, Block.NOTIFY_ALL);
+            return world.setBlockState(pos, targetState, updateFlags);
         }
         catch (RuntimeException exception) {
+            if ((updateFlags & Block.NOTIFY_NEIGHBORS) == 0) {
+                logger.warn("Failed to apply block state at {} during rollback", pos, exception);
+                return false;
+            }
             try {
                 boolean changed = world.setBlockState(pos, targetState, Block.NOTIFY_LISTENERS | Block.FORCE_STATE);
                 logger.debug("Applied {} without neighbour updates after a physics failure", pos, exception);
@@ -854,24 +904,30 @@ public final class RollbackService {
         return targetState;
     }
 
-    private void applyCompanionBlockCorrections(ServerWorld world, BlockPos pos, BlockState previousState, BlockState targetState) {
+    private void applyCompanionBlockCorrections(
+        ServerWorld world,
+        BlockPos pos,
+        BlockState previousState,
+        BlockState targetState,
+        boolean applyPhysics
+    ) {
         if (previousState != null && !previousState.isOf(targetState.getBlock())) {
-            clearCompanionForRemovedState(world, pos, previousState);
+            clearCompanionForRemovedState(world, pos, previousState, applyPhysics);
         }
 
         if (targetState.isAir()) {
             return;
         }
         if (targetState.getBlock() instanceof DoorBlock) {
-            syncDoorCompanion(world, pos, targetState);
+            syncDoorCompanion(world, pos, targetState, applyPhysics);
             return;
         }
         if (targetState.getBlock() instanceof BedBlock) {
-            syncBedCompanion(world, pos, targetState);
+            syncBedCompanion(world, pos, targetState, applyPhysics);
             return;
         }
         if (targetState.getBlock() instanceof ChestBlock) {
-            syncChestCompanion(world, pos, targetState);
+            syncChestCompanion(world, pos, targetState, applyPhysics);
         }
     }
 
@@ -889,21 +945,21 @@ public final class RollbackService {
         }
     }
 
-    private void clearCompanionForRemovedState(ServerWorld world, BlockPos pos, BlockState removedState) {
+    private void clearCompanionForRemovedState(ServerWorld world, BlockPos pos, BlockState removedState, boolean applyPhysics) {
         if (removedState.getBlock() instanceof DoorBlock) {
-            clearDoorCompanion(world, pos, removedState);
+            clearDoorCompanion(world, pos, removedState, applyPhysics);
             return;
         }
         if (removedState.getBlock() instanceof BedBlock) {
-            clearBedCompanion(world, pos, removedState);
+            clearBedCompanion(world, pos, removedState, applyPhysics);
             return;
         }
         if (removedState.getBlock() instanceof ChestBlock) {
-            downgradeChestCompanion(world, pos, removedState);
+            downgradeChestCompanion(world, pos, removedState, applyPhysics);
         }
     }
 
-    private void syncDoorCompanion(ServerWorld world, BlockPos pos, BlockState targetState) {
+    private void syncDoorCompanion(ServerWorld world, BlockPos pos, BlockState targetState, boolean applyPhysics) {
         if (!targetState.contains(Properties.DOUBLE_BLOCK_HALF)) {
             return;
         }
@@ -921,12 +977,12 @@ public final class RollbackService {
             : targetState.getBlock().getDefaultState());
         desired = withIfPresent(desired, Properties.DOUBLE_BLOCK_HALF, companionHalf);
         if (!desired.equals(companionState)) {
-            world.setBlockState(companionPos, desired, Block.NOTIFY_ALL);
+            setBlockStateSafely(world, companionPos, desired, applyPhysics);
             reconcileAttachedDecorations(world, companionPos);
         }
     }
 
-    private void clearDoorCompanion(ServerWorld world, BlockPos pos, BlockState removedState) {
+    private void clearDoorCompanion(ServerWorld world, BlockPos pos, BlockState removedState, boolean applyPhysics) {
         if (!removedState.contains(Properties.DOUBLE_BLOCK_HALF)) {
             return;
         }
@@ -939,12 +995,12 @@ public final class RollbackService {
 
         BlockState replacement = replacementForRemovedBlock(companionState);
         if (!replacement.equals(companionState)) {
-            world.setBlockState(companionPos, replacement, Block.NOTIFY_ALL);
+            setBlockStateSafely(world, companionPos, replacement, applyPhysics);
             reconcileAttachedDecorations(world, companionPos);
         }
     }
 
-    private void syncBedCompanion(ServerWorld world, BlockPos pos, BlockState targetState) {
+    private void syncBedCompanion(ServerWorld world, BlockPos pos, BlockState targetState, boolean applyPhysics) {
         if (!targetState.contains(Properties.BED_PART) || !targetState.contains(Properties.HORIZONTAL_FACING)) {
             return;
         }
@@ -964,12 +1020,12 @@ public final class RollbackService {
         desired = withIfPresent(desired, Properties.BED_PART, companionPart);
         desired = withIfPresent(desired, Properties.HORIZONTAL_FACING, facing);
         if (!desired.equals(companionState)) {
-            world.setBlockState(companionPos, desired, Block.NOTIFY_ALL);
+            setBlockStateSafely(world, companionPos, desired, applyPhysics);
             reconcileAttachedDecorations(world, companionPos);
         }
     }
 
-    private void clearBedCompanion(ServerWorld world, BlockPos pos, BlockState removedState) {
+    private void clearBedCompanion(ServerWorld world, BlockPos pos, BlockState removedState, boolean applyPhysics) {
         if (!removedState.contains(Properties.BED_PART) || !removedState.contains(Properties.HORIZONTAL_FACING)) {
             return;
         }
@@ -984,12 +1040,12 @@ public final class RollbackService {
 
         BlockState replacement = replacementForRemovedBlock(companionState);
         if (!replacement.equals(companionState)) {
-            world.setBlockState(companionPos, replacement, Block.NOTIFY_ALL);
+            setBlockStateSafely(world, companionPos, replacement, applyPhysics);
             reconcileAttachedDecorations(world, companionPos);
         }
     }
 
-    private void syncChestCompanion(ServerWorld world, BlockPos pos, BlockState targetState) {
+    private void syncChestCompanion(ServerWorld world, BlockPos pos, BlockState targetState, boolean applyPhysics) {
         if (!targetState.contains(Properties.CHEST_TYPE) || !targetState.contains(Properties.HORIZONTAL_FACING)) {
             return;
         }
@@ -1012,12 +1068,12 @@ public final class RollbackService {
         desired = withIfPresent(desired, Properties.CHEST_TYPE, companionType);
         desired = withIfPresent(desired, Properties.HORIZONTAL_FACING, targetState.get(Properties.HORIZONTAL_FACING));
         if (!desired.equals(companionState)) {
-            world.setBlockState(companionPos, desired, Block.NOTIFY_ALL);
+            setBlockStateSafely(world, companionPos, desired, applyPhysics);
             reconcileAttachedDecorations(world, companionPos);
         }
     }
 
-    private void downgradeChestCompanion(ServerWorld world, BlockPos pos, BlockState removedState) {
+    private void downgradeChestCompanion(ServerWorld world, BlockPos pos, BlockState removedState, boolean applyPhysics) {
         if (!removedState.contains(Properties.CHEST_TYPE) || !removedState.contains(Properties.HORIZONTAL_FACING)) {
             return;
         }
@@ -1035,7 +1091,7 @@ public final class RollbackService {
 
         BlockState desired = withIfPresent(companionState, Properties.CHEST_TYPE, ChestType.SINGLE);
         if (!desired.equals(companionState)) {
-            world.setBlockState(companionPos, desired, Block.NOTIFY_ALL);
+            setBlockStateSafely(world, companionPos, desired, applyPhysics);
             reconcileAttachedDecorations(world, companionPos);
         }
     }
@@ -1516,14 +1572,7 @@ public final class RollbackService {
     }
 
     private void sanitizeEntityRollbackNbt(NbtCompound entityNbt) {
-        entityNbt.remove("UUID");
-        entityNbt.remove("Pos");
-        entityNbt.remove("Motion");
-        entityNbt.remove("Rotation");
-        entityNbt.remove("Passengers");
-        FabricEventLogger.retainStableBrainMemories(entityNbt);
-        entityNbt.remove("Fire");
-        entityNbt.remove("HasVisualFire");
+        EntityRollbackNbtPolicy.sanitize(entityNbt);
     }
 
     private boolean entityMatchesLoggedType(Entity entity, String loggedType) {
@@ -2189,6 +2238,7 @@ public final class RollbackService {
         private final List<Long> changedIds = new ArrayList<>();
         private int bucketIndex;
         private int sliceStart;
+        private List<PlannedApplyEvent> plannedBucketEvents;
         private int changed;
         private int deferred;
         private int scanned;
@@ -2230,14 +2280,18 @@ public final class RollbackService {
                     );
                     bucketIndex++;
                     sliceStart = 0;
+                    plannedBucketEvents = null;
                     continue;
                 }
 
-                List<StoredEventRecord> bucketEvents = entry.getValue();
-                int sliceEnd = Math.min(sliceStart + CHUNK_APPLY_SLICE_SIZE, bucketEvents.size());
+                if (plannedBucketEvents == null) {
+                    plannedBucketEvents = planBucketEvents(targetWorld, entry.getValue(), restore);
+                }
+                int sliceEnd = Math.min(sliceStart + CHUNK_APPLY_SLICE_SIZE, plannedBucketEvents.size());
                 for (int index = sliceStart; index < sliceEnd; index++) {
-                    StoredEventRecord event = bucketEvents.get(index);
-                    ApplyOutcome outcome = applyEvent(targetWorld, event, restore);
+                    PlannedApplyEvent plannedEvent = plannedBucketEvents.get(index);
+                    StoredEventRecord event = plannedEvent.event();
+                    ApplyOutcome outcome = applyEvent(targetWorld, event, restore, plannedEvent.applyBlockPhysics());
                     if (outcome == ApplyOutcome.APPLIED) {
                         changed++;
                         changedIds.add(event.id());
@@ -2247,13 +2301,14 @@ public final class RollbackService {
                     }
                 }
 
-                if (sliceEnd < bucketEvents.size()) {
+                if (sliceEnd < plannedBucketEvents.size()) {
                     sliceStart = sliceEnd;
                     return false;
                 }
 
                 bucketIndex++;
                 sliceStart = 0;
+                plannedBucketEvents = null;
             }
 
             int marked = database.updateRolledBack(changedIds, !restore);
@@ -2324,6 +2379,9 @@ public final class RollbackService {
     }
 
     private record ChunkBucket(String worldKey, int chunkX, int chunkZ) {
+    }
+
+    private record PlannedApplyEvent(StoredEventRecord event, boolean applyBlockPhysics) {
     }
 
     private ContainerTransactionPayload parseContainerTransactionPayload(String payload) {
