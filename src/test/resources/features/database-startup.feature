@@ -1,14 +1,21 @@
-Feature: Database reference integrity at server startup
+Feature: Non-blocking database reference integrity at server startup
+
+  Scenario: Starting with a legacy database
+    Given a legacy SQLite database needs full-table integrity maintenance
+    When CoreProtect starts its database
+    Then required schema setup completes before startup returns
+    And full integrity maintenance is queued on the database writer
+    And event writes remain ordered after that maintenance
 
   Scenario: Restarting with enforced foreign keys
     Given a populated SQLite database with every required foreign key
-    When CoreProtect checks reference integrity during startup
+    When scheduled maintenance checks reference integrity
     Then no bulk repair statement is executed
 
   Scenario: Upgrading a legacy schema with a missing foreign key
     Given a populated SQLite database without the target reference constraint
     And an event contains an orphaned target reference
-    When CoreProtect checks reference integrity during startup
+    When scheduled maintenance checks reference integrity
     Then the orphaned target reference is cleared
     And relations that already have foreign keys are not repaired again
 

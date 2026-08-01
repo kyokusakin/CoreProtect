@@ -34,8 +34,16 @@ public final class DatabaseMigrationService {
         long nextProgressAt = System.currentTimeMillis() + PROGRESS_INTERVAL_MS;
 
         try {
+            if (sourceDatabase.schemaMaintenancePending()) {
+                throw userFacing(
+                    "fabric.migrate.schema_maintenance",
+                    "CoreProtect database schema maintenance is still running. Try the migration again later."
+                );
+            }
+
             targetDatabase = new CoreProtectDatabase(targetConfig, runtime.databaseRootDirectory(), logger);
             targetDatabase.start();
+            targetDatabase.awaitSchemaMaintenance();
 
             long targetRows = targetDatabase.countAllEvents();
             long targetPendingRows = targetDatabase.countAllPendingInventoryRollbacks();

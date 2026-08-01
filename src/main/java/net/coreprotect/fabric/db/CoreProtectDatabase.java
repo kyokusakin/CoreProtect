@@ -25,13 +25,15 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Queue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.CRC32;
 
 public final class CoreProtectDatabase implements AutoCloseable {
@@ -60,20 +62,30 @@ public final class CoreProtectDatabase implements AutoCloseable {
     private final Queue<EventRecord> pendingEventWrites = new ConcurrentLinkedQueue<>();
     private final Object quiescenceMonitor = new Object();
     private final Object pauseMonitor = new Object();
-    private final ExecutorService writer = Executors.newSingleThreadExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "coreprotect-fabric-writer");
-        thread.setDaemon(true);
-        return thread;
-    });
+    private final ExecutorService writer;
 
     private Connection writeConnection;
+    private volatile CompletableFuture<Void> schemaMaintenance = CompletableFuture.completedFuture(null);
 
     public CoreProtectDatabase(CoreProtectFabricConfig config, Path rootDirectory, Logger logger) {
+        this(config, rootDirectory, logger, createWriter());
+    }
+
+    CoreProtectDatabase(CoreProtectFabricConfig config, Path rootDirectory, Logger logger, ExecutorService writer) {
         this.config = config;
         this.rootDirectory = rootDirectory;
         this.databaseType = config.databaseType();
         this.databasePath = databaseType == CoreProtectFabricConfig.DatabaseType.SQLITE ? rootDirectory.resolve(config.databaseFile()) : null;
         this.logger = logger;
+        this.writer = writer;
+    }
+
+    private static ExecutorService createWriter() {
+        return Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "coreprotect-fabric-writer");
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
     public void start() {
@@ -81,6 +93,7 @@ public final class CoreProtectDatabase implements AutoCloseable {
             Class.forName(databaseType == CoreProtectFabricConfig.DatabaseType.MYSQL ? "com.mysql.cj.jdbc.Driver" : "org.sqlite.JDBC");
             writeConnection = openConnection();
             initializeSchema(writeConnection);
+            scheduleSchemaMaintenance();
         }
         catch (ClassNotFoundException | SQLException | RuntimeException exception) {
             writer.shutdownNow();
@@ -98,6 +111,49 @@ public final class CoreProtectDatabase implements AutoCloseable {
         }
         catch (SQLException exception) {
             return false;
+        }
+    }
+
+    public boolean schemaMaintenancePending() {
+        return !schemaMaintenance.isDone();
+    }
+
+    public void awaitSchemaMaintenance() {
+        try {
+            schemaMaintenance.get();
+        }
+        catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while waiting for CoreProtect schema maintenance", exception);
+        }
+        catch (ExecutionException exception) {
+            throw new IllegalStateException("CoreProtect schema maintenance failed", exception.getCause());
+        }
+    }
+
+    private void scheduleSchemaMaintenance() {
+        CompletableFuture<Void> completion = new CompletableFuture<>();
+        schemaMaintenance = completion;
+        try {
+            writer.execute(() -> {
+                try {
+                    maintainSchema(writeConnection);
+                    completion.complete(null);
+                }
+                catch (SQLException | RuntimeException exception) {
+                    logger.error("CoreProtect database schema maintenance failed; audit logging may be degraded", exception);
+                    completion.completeExceptionally(exception);
+                }
+                finally {
+                    synchronized (quiescenceMonitor) {
+                        quiescenceMonitor.notifyAll();
+                    }
+                }
+            });
+        }
+        catch (RejectedExecutionException exception) {
+            completion.completeExceptionally(exception);
+            throw exception;
         }
     }
 
@@ -1736,11 +1792,6 @@ public final class CoreProtectDatabase implements AutoCloseable {
                         + "FOREIGN KEY (target_id) REFERENCES cp_target (id)"
                         + ")"
                 );
-                statement.executeUpdate("CREATE INDEX IF NOT EXISTS cp_events_ts_idx ON cp_events (ts)");
-                statement.executeUpdate("CREATE INDEX IF NOT EXISTS cp_entity_ts_idx ON cp_entity (ts)");
-                statement.executeUpdate("CREATE UNIQUE INDEX IF NOT EXISTS cp_pending_inventory_rollbacks_event_restore_idx ON cp_pending_inventory_rollbacks (event_id, restore)");
-                statement.executeUpdate("CREATE INDEX IF NOT EXISTS cp_pending_inventory_rollbacks_status_idx ON cp_pending_inventory_rollbacks (status, created_ts)");
-                statement.executeUpdate("CREATE INDEX IF NOT EXISTS cp_pending_inventory_rollbacks_status_attempts_updated_idx ON cp_pending_inventory_rollbacks (status, attempts, updated_ts)");
             }
             else {
                 statement.executeUpdate(
@@ -1847,6 +1898,9 @@ public final class CoreProtectDatabase implements AutoCloseable {
         ensureColumn(connection, "cp_pending_inventory_rollbacks", "actor_id", databaseType == CoreProtectFabricConfig.DatabaseType.SQLITE ? "INTEGER" : "BIGINT");
         ensureColumn(connection, "cp_pending_inventory_rollbacks", "world_id", databaseType == CoreProtectFabricConfig.DatabaseType.SQLITE ? "INTEGER" : "BIGINT");
         ensureColumn(connection, "cp_pending_inventory_rollbacks", "target_id", databaseType == CoreProtectFabricConfig.DatabaseType.SQLITE ? "INTEGER" : "BIGINT");
+    }
+
+    private void maintainSchema(Connection connection) throws SQLException {
         ensureReferenceIndexes(connection);
         normalizeMappingTables(connection);
         repairReferenceIntegrity(connection);
@@ -3561,13 +3615,13 @@ public final class CoreProtectDatabase implements AutoCloseable {
 
     public void awaitWriterQuiescence() {
         long deadline = System.currentTimeMillis() + QUIESCENCE_TIMEOUT_MS;
-        while (pendingWrites.get() > 0) {
+        while (pendingWrites.get() > 0 || schemaMaintenancePending()) {
             long remaining = deadline - System.currentTimeMillis();
             if (remaining <= 0) {
                 return;
             }
             synchronized (quiescenceMonitor) {
-                if (pendingWrites.get() <= 0) {
+                if (pendingWrites.get() <= 0 && !schemaMaintenancePending()) {
                     return;
                 }
                 try {

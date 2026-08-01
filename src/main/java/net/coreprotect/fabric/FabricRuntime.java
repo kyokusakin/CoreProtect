@@ -147,6 +147,9 @@ public final class FabricRuntime {
         if (rollbackService != null && rollbackService.hasPendingWork()) {
             throw new IllegalStateException("Cannot reload CoreProtect while rollback work is pending");
         }
+        if (previousDatabase.schemaMaintenancePending()) {
+            throw new IllegalStateException("Cannot reload CoreProtect while database schema maintenance is active");
+        }
         if (previousDatabase.writesPaused()) {
             throw new IllegalStateException("Cannot reload CoreProtect while database maintenance is active");
         }

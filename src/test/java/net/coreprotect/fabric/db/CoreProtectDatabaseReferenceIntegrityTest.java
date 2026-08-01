@@ -1,18 +1,26 @@
 package net.coreprotect.fabric.db;
 
 import net.coreprotect.fabric.config.CoreProtectFabricConfig;
+import net.coreprotect.fabric.log.CoreProtectEventType;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
 
-import java.nio.file.Path;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Queue;
+import java.util.concurrent.AbstractExecutorService;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -24,6 +32,53 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 final class CoreProtectDatabaseReferenceIntegrityTest {
     @TempDir
     Path temporaryDirectory;
+
+    @Test
+    void queuesSchemaMaintenanceAheadOfEventWrites() throws Exception {
+        Path databaseDirectory = temporaryDirectory.resolve("deferred-maintenance");
+        Files.createDirectories(databaseDirectory);
+        ManualExecutorService executor = new ManualExecutorService();
+        CoreProtectDatabase database = new CoreProtectDatabase(
+            sqliteConfig(),
+            databaseDirectory,
+            LoggerFactory.getLogger(getClass()),
+            executor
+        );
+
+        try {
+            database.start();
+            assertEquals(0L, database.countAllEvents());
+
+            database.write(new EventRecord(
+                1L,
+                CoreProtectEventType.SERVER_START,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null
+            ));
+
+            assertTrue(database.schemaMaintenancePending());
+            assertEquals(2, executor.queuedTasks());
+
+            executor.runNext();
+
+            assertFalse(database.schemaMaintenancePending());
+            assertEquals(1, database.pendingWrites());
+
+            executor.runNext();
+
+            assertEquals(0, database.pendingWrites());
+            assertEquals(1L, database.countAllEvents());
+        }
+        finally {
+            database.close();
+        }
+    }
 
     @Test
     void skipsBulkRepairWhenAllReferencesAreEnforced() throws Exception {
@@ -88,9 +143,12 @@ final class CoreProtectDatabaseReferenceIntegrityTest {
     }
 
     private CoreProtectDatabase database() {
-        CoreProtectFabricConfig config = CoreProtectFabricConfig.loadDefaults()
+        return new CoreProtectDatabase(sqliteConfig(), temporaryDirectory, LoggerFactory.getLogger(getClass()));
+    }
+
+    private CoreProtectFabricConfig sqliteConfig() {
+        return CoreProtectFabricConfig.loadDefaults()
             .withDatabaseType(CoreProtectFabricConfig.DatabaseType.SQLITE);
-        return new CoreProtectDatabase(config, temporaryDirectory, LoggerFactory.getLogger(getClass()));
     }
 
     private Connection openDatabase(String fileName) throws Exception {
@@ -153,6 +211,56 @@ final class CoreProtectDatabaseReferenceIntegrityTest {
     private void execute(Connection connection, String sql) throws SQLException {
         try (Statement statement = connection.createStatement()) {
             statement.execute(sql);
+        }
+    }
+
+    private static final class ManualExecutorService extends AbstractExecutorService {
+        private final Queue<Runnable> tasks = new ArrayDeque<>();
+        private boolean shutdown;
+
+        @Override
+        public void shutdown() {
+            shutdown = true;
+        }
+
+        @Override
+        public List<Runnable> shutdownNow() {
+            shutdown = true;
+            List<Runnable> remaining = new ArrayList<>(tasks);
+            tasks.clear();
+            return remaining;
+        }
+
+        @Override
+        public boolean isShutdown() {
+            return shutdown;
+        }
+
+        @Override
+        public boolean isTerminated() {
+            return shutdown && tasks.isEmpty();
+        }
+
+        @Override
+        public boolean awaitTermination(long timeout, TimeUnit unit) {
+            return isTerminated();
+        }
+
+        @Override
+        public void execute(Runnable command) {
+            if (shutdown) {
+                throw new RejectedExecutionException("Executor is shut down");
+            }
+            tasks.add(command);
+        }
+
+        int queuedTasks() {
+            return tasks.size();
+        }
+
+        void runNext() {
+            Runnable task = tasks.remove();
+            task.run();
         }
     }
 }
